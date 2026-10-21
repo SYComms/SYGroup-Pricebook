@@ -2525,6 +2525,194 @@ cs_cfg_mod = st.session_state.active_config.get("call_scope_services", [
     {"name": "Call Score", "buy": 20.00, "sell": 45.00},
     {"name": "AI Receptionist", "buy": 69.00, "sell": 89.00},
 ])
+# ─── LETTER OF AUTHORITY (number porting) ─────────────────────────────────────
+_LOA_PAGES = {}     # first/last page numbers of the LOA inside the core pack (used to cut out a stand-alone copy)
+
+def _loa_split_address(text, postcode_hint=""):
+    """Best-effort split of a free-text address into building, street, town, county, postcode."""
+    txt = (text or "").strip()
+    pc = ""
+    try:
+        pc = bb_find_postcode(txt) or ""
+    except Exception:
+        pc = ""
+    lines = [l.strip(" ,") for l in re.split(r"[\n]+", txt) if l.strip(" ,")]
+    if pc:
+        pc_pat = re.compile(re.escape(pc).replace(r"\ ", r"\s*"), re.I)
+        lines = [l for l in (pc_pat.sub("", l).strip(" ,") for l in lines) if l]
+    b = st_ = t = c = ""
+    if len(lines) >= 4:
+        b, t, c = lines[0], lines[-2], lines[-1]; st_ = ", ".join(lines[1:-2])
+    elif len(lines) == 3:
+        st_, t, c = lines
+    elif len(lines) == 2:
+        st_, t = lines
+    elif len(lines) == 1:
+        st_ = lines[0]
+    return {"building": b, "street": st_, "town": t, "county": c, "postcode": pc or postcode_hint}
+
+def _loa_numbers():
+    """Customer's main number first, then any extras the consultant typed. De-duplicated by digits."""
+    main = (st.session_state.get("q_phone") or "").strip()
+    extra = re.split(r"[\n,;]+", st.session_state.get("q_loa_numbers") or "")
+    out, seen = [], set()
+    for n in ([main] if main else []) + extra:
+        n = " ".join(n.split())
+        d = re.sub(r"\D", "", n)
+        if n and d and d not in seen:
+            seen.add(d); out.append(n)
+    return out
+
+def _loa_data():
+    g = lambda k: (st.session_state.get(k) or "").strip()
+    site_txt = g("q_loa_site") or g("q_address")
+    bill_txt = g("q_loa_bill") or site_txt
+    nums = _loa_numbers()
+    cn = g("q_contact"); nm, _, jt = cn.partition(" - ")
+    return {"on": bool(st.session_state.get("q_loa_on")), "numbers": nums,
+            "provider": g("q_loa_provider"), "prov_addr": g("q_loa_prov_addr"),
+            "mbn": g("q_loa_mbn") or (nums[0] if nums else ""), "acct": g("q_loa_acct"),
+            "site": _loa_split_address(site_txt), "bill": _loa_split_address(bill_txt),
+            "comp": g("q_comp_name"), "reg": g("q_comp_reg"),
+            "name": nm.strip(), "title": jt.strip(), "email": g("q_dir_email")}
+
+def _loa_pages(pdf, add_header, sig_bytes=None, sig_ts=""):
+    """Draws the Customer Letter of Authority (plus continuation sheets) onto the pack. Own-brand look,
+    same fields as the standard CLoA form. Latin-1 safe via s()."""
+    d = _loa_data()
+    _apb, _bm = pdf.auto_page_break, pdf.b_margin
+    pdf.set_auto_page_break(False)
+    L, W = pdf.l_margin, pdf.epw
+    NAVY, TEAL, GREY = (31, 20, 80), (0, 181, 163), (235, 236, 242)
+    first_page = pdf.page_no() + 1
+
+    def hdr_cell(x, y, w, h, text, align="L", size=9.5):
+        pdf.set_fill_color(*NAVY); pdf.set_text_color(255, 255, 255); pdf.set_font("Helvetica", "B", size)
+        pdf.set_xy(x, y); pdf.cell(w, h, "  " + s(text), fill=True, align=align, border=1)
+        pdf.set_text_color(0, 0, 0)
+
+    def lab(x, y, w, h, text):
+        pdf.set_fill_color(*GREY); pdf.set_font("Helvetica", "", 8.2)
+        pdf.set_xy(x, y); pdf.cell(w, h, "  " + s(text), fill=True, border=1)
+
+    def val(x, y, w, h, text, bold=False, size=8.6):
+        pdf.set_font("Helvetica", "B" if bold else "", size)
+        pdf.set_xy(x, y); pdf.cell(w, h, " " + s(text), border=1)
+
+    def requester_block(y, with_sig):
+        hdr_cell(L, y, W, 7, "Requester's Details"); y += 7
+        lab(L, y, 38, 14, "Signed"); pdf.set_xy(L + 38, y); pdf.cell(W - 38, 14, "", border=1)
+        if with_sig and sig_bytes and len(sig_bytes) > 100:
+            try:
+                import tempfile as _t, os as _o
+                with _t.NamedTemporaryFile(suffix=".png", delete=False) as f:
+                    f.write(sig_bytes); pth = f.name
+                try:
+                    pdf.image(pth, x=L + 41, y=y + 1, h=12)
+                finally:
+                    _o.unlink(pth)
+            except Exception:
+                pass
+        y += 14
+        lab(L, y, 38, 7, "Print Name"); val(L + 38, y, 62, 7, d["name"])
+        lab(L + 100, y, 22, 7, "Job title"); val(L + 122, y, W - 122, 7, d["title"]); y += 7
+        lab(L, y, 38, 7, "Date (DD/MM/YYYY)")
+        val(L + 38, y, 62, 7, (sig_ts.split()[0] if (sig_bytes and sig_ts) else (date.today().strftime("%d/%m/%Y") if sig_bytes else "")))
+        lab(L + 100, y, 22, 7, "Email"); val(L + 122, y, W - 122, 7, d["email"])
+        return y + 7
+
+    nums = d["numbers"]
+    CAP = 22
+    if len(nums) > CAP:
+        on_page, overflow = nums[:CAP - 2], nums[CAP - 2:]
+    else:
+        on_page, overflow = nums, []
+
+    # ── Page 1 ────────────────────────────────────────────────────────────────
+    pdf.add_page(); add_header(pdf, "Customer Letter of Authority (CLoA)")
+    y = 48
+    pdf.set_font("Helvetica", "I", 8.5); pdf.set_xy(L, y); pdf.cell(W, 5, "for the porting of numbers from one provider to another", align="C")
+    y += 7
+    hw = W / 2
+    hdr_cell(L, y, hw, 7, "Current Provider", "C"); hdr_cell(L + hw, y, hw, 7, "New Provider", "C"); y += 7
+    lab(L, y, 22, 7, "Name"); val(L + 22, y, hw - 22, 7, d["provider"] or "")
+    lab(L + hw, y, 22, 7, "Name"); val(L + hw + 22, y, hw - 22, 7, _BRAND["legal"]); y += 7
+    lab(L, y, 22, 16, "Address:"); pdf.set_xy(L + 22, y); pdf.cell(hw - 22, 16, "", border=1)
+    pdf.set_font("Helvetica", "", 8.2); pdf.set_xy(L + 23, y + 1)
+    pdf.multi_cell(hw - 24, 4, s(d["prov_addr"]) if d["prov_addr"] else "")
+    lab(L + hw, y, 22, 16, "Address:"); pdf.set_xy(L + hw + 22, y); pdf.cell(hw - 22, 16, "", border=1)
+    pdf.set_font("Helvetica", "", 8.2); pdf.set_xy(L + hw + 23, y + 1); pdf.multi_cell(hw - 24, 4, s(_BRAND["address"]))
+    y += 21
+
+    lw = 100
+    hdr_cell(L, y, lw, 7, "Site address to register against numbers")
+    hdr_cell(L + lw, y, W - lw, 7, "Numbers to be Ported (Geo & non-Geo)", "C", 8.8)
+    y += 7
+    row = 6.5; site = d["site"]
+    srows = [("Building Name / Number", site["building"]), ("Street Name", site["street"]), ("Town/City", site["town"]),
+             ("County", site["county"]), ("Post Code", site["postcode"]), ("MBN - Main Billing No. (Geo)", d["mbn"])]
+    for i, (a, b) in enumerate(srows):
+        lab(L, y + i * row, 44, row, a); val(L + 44, y + i * row, lw - 44, row, b)
+    box_h = row * len(srows)
+    pdf.set_xy(L + lw, y); pdf.cell(W - lw, box_h, "", border=1)
+    pdf.set_font("Helvetica", "B", 8.6)
+    colw = (W - lw) / 2
+    for i, n in enumerate(on_page):
+        cx = L + lw + (i // 11) * colw; cy = y + 1.2 + (i % 11) * 3.45
+        pdf.set_xy(cx + 1.5, cy); pdf.cell(colw - 2, 3.4, s(n))
+    if overflow:
+        pdf.set_font("Helvetica", "I", 7); pdf.set_xy(L + lw + colw + 1.5, y + 1.2 + 10 * 3.45)
+        pdf.cell(colw - 2, 3.4, f"+{len(overflow)} more - see next sheet")
+    y += box_h + 6
+
+    hdr_cell(L, y, W, 7, "Customer's Company Details (as shown on most recent bill from current provider)"); y += 7
+    bill = d["bill"]
+    crow = [("Company Name", d["comp"]),
+            ("Billing Address", ", ".join(x for x in (bill["building"], bill["street"]) if x)),
+            ("Town/City", bill["town"]), ("County", bill["county"]), ("Post Code", bill["postcode"]),
+            ("Company Registration No.", d["reg"]), ("Billing Account No. (Non-Geo only)", d["acct"])]
+    for i, (a, b) in enumerate(crow):
+        lab(L, y + i * row, 62, row, a); val(L + 62, y + i * row, W - 62, row, b)
+    y += row * len(crow) + 6
+
+    pdf.set_font("Helvetica", "", 8.2); pdf.set_xy(L, y)
+    pdf.multi_cell(W, 4.2, s("**Fao my current provider**; this CLoA is to notify you that I (representing the customer shown above) have taken the decision to move my "
+        "telephony services to a new Provider and require the numbers associated with those services to be ported across to my chosen new "
+        "Provider (stated above)."), align="J", markdown=True)
+    pdf.ln(1.5); pdf.set_x(L)
+    pdf.multi_cell(W, 4.2, s("My new Provider is authorised to act on my behalf in this matter and you have my authority to disclose to my new "
+        "Provider (at their request) any other service or site-specific details they might need to allow this port to proceed (e.g. site / "
+        "billing address post code, DDI number range, Main Billing Number (MBN), etc.)."), align="J")
+    pdf.ln(1.5); pdf.set_x(L)
+    pdf.multi_cell(W, 4.2, s("I recognise that it is my responsibility to arrange the cessation of, or changes to, any other services provided "
+        "by my current Provider."), align="J")
+    y = pdf.get_y() + 4
+    requester_block(y, True)
+
+    # ── Continuation sheets ───────────────────────────────────────────────────
+    PER_PAGE, COLS = 96, 4
+    pg = 0
+    while overflow:
+        chunk, overflow = overflow[:PER_PAGE], overflow[PER_PAGE:]
+        pg += 1
+        pdf.add_page(); add_header(pdf, f"Letter of Authority - Continuation Sheet {pg}")
+        y = 48
+        pdf.set_font("Helvetica", "", 8.5); pdf.set_xy(L, y)
+        pdf.multi_cell(W, 4.5, s(f"Customer: {d['comp']}   |   Current provider: {d['provider'] or '-'}   |   New provider: {_BRAND['legal']}"))
+        y = pdf.get_y() + 2
+        hdr_cell(L, y, W, 7, "Numbers to be Ported (Geo & non-Geo) - continued"); y += 7
+        cw = W / COLS; rows_n = -(-len(chunk) // COLS)
+        for r in range(rows_n):
+            for c in range(COLS):
+                i = r * COLS + c
+                pdf.set_xy(L + c * cw, y + r * 6); pdf.set_font("Helvetica", "", 8.6)
+                pdf.cell(cw, 6, " " + (s(chunk[i]) if i < len(chunk) else ""), border=1)
+        y += rows_n * 6 + 8
+        requester_block(y, True)
+
+    _LOA_PAGES["range"] = (first_page, pdf.page_no())
+    pdf.set_auto_page_break(_apb, _bm)
+
 # ── Printers (Ricoh): own expander in the right-hand column ────────────────
 printer_rows = []
 with col_hw2:
@@ -2547,6 +2735,34 @@ with col_hw2:
             if _pq > 0:
                 printer_rows.append({"name": _pn, "qty": int(_pq), "cost": float(_pi["cost"]),
                                      "cpc_cost": float(_pi["cpc"]), "volume": int(_pv)})
+
+# ── Number porting: Letter of Authority ────────────────────────────────────
+with col_hw2:
+    _loa_open = bool(st.session_state.get("q_loa_on"))
+    with st.expander("📞 Number porting - Letter of Authority", expanded=_loa_open):
+        st.caption("Tick this when we are taking over the customer's existing numbers. A Letter of Authority is added to "
+                   "the pack, and can also be downloaded on its own to send to the old provider.")
+        st.checkbox("Include a Letter of Authority", key="q_loa_on")
+        if st.session_state.get("q_loa_on"):
+            st.text_input("Existing service provider", key="q_loa_provider",
+                          placeholder="e.g. BT, Virgin Media Business, Gamma")
+            st.text_area("Existing provider's address (optional)", key="q_loa_prov_addr", height=70)
+            _mn = (st.session_state.get("q_phone") or "").strip()
+            st.caption(f"Main number from the customer form: **{_mn}** - it is included automatically." if _mn
+                       else "No main number on the customer form yet - add it under Customer Details, or list it below.")
+            st.text_area("Additional numbers to port", key="q_loa_numbers", height=110,
+                         placeholder="One per line (or separated by commas)\n01743 123456\n01743 123457\n0800 123 4567")
+            st.text_input("Main billing number - MBN (optional)", key="q_loa_mbn",
+                          help="Geographic numbers only. If left blank the customer's main number is used.")
+            st.text_input("Billing account number (optional)", key="q_loa_acct", help="Non-geographic numbers only.")
+            st.text_area("Site address for the numbers (only if different from the installation address)", key="q_loa_site", height=70)
+            st.text_area("Billing address on the latest bill (only if different from the site address)", key="q_loa_bill", height=70)
+            _ld = _loa_data()
+            st.caption(f"{len(_ld['numbers'])} number(s) will be ported.")
+            if not _ld["provider"]:
+                st.caption(":orange[Add the existing service provider - it goes on the form.]")
+            if not _ld["numbers"]:
+                st.caption(":orange[No numbers yet - nothing will be added to the pack until there is at least one.]")
 
 cs_svc_rows = []
 for _cs in cs_cfg_mod:
@@ -4184,6 +4400,11 @@ def _build_pdf_core(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='
         pdf.multi_cell(pdf.epw,3.5,"I confirm that I am authorised to sign this agreement on behalf of the Customer.",align="C")
         pdf.set_text_color(0,0,0)
 
+    # ── LETTER OF AUTHORITY (only when the consultant has switched it on) ─────────
+    _LOA_PAGES.pop("range", None)
+    if _loa_data()["on"] and _loa_data()["numbers"]:
+        _loa_pages(pdf, _add_header, sig_bytes=sig_bytes, sig_ts=sig_timestamp)
+
     # ── ON-SITE WARRANTY FORM ─────────────────────────────────────────────────
     pdf.add_page()
     _add_header(pdf, "On-Site Warranty Agreement")
@@ -4842,6 +5063,20 @@ def _embed_sig(pdf_obj, sig_bytes, x=15, w=65, h=20,
     except Exception:
         pass
 
+
+
+def build_loa_pdf(sig_bytes=None, sig_ts=""):
+    """Stand-alone Letter of Authority for the old provider - cut out of the pack so no pricing is ever shared."""
+    core = _build_pdf_core(sig_bytes=sig_bytes, sig_timestamp=sig_ts)
+    rng = _LOA_PAGES.get("range")
+    if not rng:
+        return None
+    from pypdf import PdfReader, PdfWriter
+    r = PdfReader(io.BytesIO(core)); w = PdfWriter()
+    for i in range(rng[0] - 1, rng[1]):
+        w.add_page(r.pages[i])
+    out = io.BytesIO(); w.write(out)
+    return out.getvalue()
 
 
 def build_pdf(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='', sig_ip='', **kw):
@@ -5712,6 +5947,7 @@ with tab3:
             "✅ Inclusive Support & Maintenance",
             "✅ Customer Requirements Checklist",
             "✅ Direct Debit Mandate",
+        ] + (["✅ Letter of Authority (number porting)"] if (_loa_data()["on"] and _loa_data()["numbers"]) else []) + [
             "✅ Signature Blocks (all sections)",
         ]
         for d in docs:
@@ -5752,6 +5988,17 @@ with tab3:
             use_container_width=True
         )
         st.markdown('<div class="success-box">✅ PDF ready - Proposal Summary (with agreement to go ahead), Order Form, Network Agreement, Mandate & Checklist.</div>', unsafe_allow_html=True)
+        if _loa_data()["on"] and _loa_data()["numbers"]:
+            st.markdown("---")
+            st.markdown("#### 📞 Letter of Authority only")
+            st.caption("For sending to the old provider on its own - it has no pricing in it.")
+            _loa_only = build_loa_pdf()
+            if _loa_only:
+                st.download_button(
+                    label="📞 Download Letter of Authority (unsigned)",
+                    data=_loa_only,
+                    file_name=f"LetterOfAuthority_{safe_name}_{date.today()}.pdf",
+                    mime="application/pdf", use_container_width=True, key="dl_loa_docs")
         st.markdown("")
         st.markdown("---")
         st.markdown("#### 📋 One-Page Proposal")
@@ -6857,6 +7104,19 @@ with tab6:
                     if not _cis_done else "Add signature and name on the left to enable the signed download.")
             st.button("✅ Download Signed Pack", disabled=True,
                       use_container_width=True, key="dl_signed_dis")
+
+        if _loa_data()["on"] and _loa_data()["numbers"]:
+            st.divider()
+            st.markdown("**Letter of Authority (for the old provider)**")
+            st.caption("On its own, with no pricing - ready to send to the customer's current provider.")
+            _loa_signed = bool(sig_bytes and sig_name and _cis_done)
+            _loa_bytes = build_loa_pdf(sig_bytes=sig_bytes if _loa_signed else None, sig_ts=_ts if _loa_signed else "")
+            if _loa_bytes:
+                st.download_button(
+                    "📞 Download Letter of Authority" + (" (signed)" if _loa_signed else " (unsigned)"),
+                    data=_loa_bytes,
+                    file_name=f"LetterOfAuthority_{safe}_{'SIGNED_' if _loa_signed else ''}{date.today()}.pdf",
+                    mime="application/pdf", use_container_width=True, key="dl_loa_sign")
 
         st.divider()
 
