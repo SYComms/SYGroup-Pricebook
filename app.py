@@ -375,8 +375,8 @@ if not st.session_state.app_authenticated:
                             _dom = (_em or "").strip().lower().split("@")[-1]
                             _b = _u["brand"] if _u["brand"] in BRAND_CONFIGS else _DOMAIN_BRAND.get(_dom, "SY Comms")
                             st.session_state.selected_brand = _b
-                            if _u["name"] and not st.session_state.get("q_rep_name"):
-                                st.session_state["q_rep_name"] = _u["name"]
+                            if _u["name"]:
+                                st.session_state["q_rep_name"] = _u["name"]       # who is producing the deals
                             st.session_state.app_authenticated = True
                             st.rerun()
                         else:
@@ -597,6 +597,8 @@ if "admin_unlocked" not in st.session_state:
     st.session_state.admin_unlocked = False
 if "consultant_unlocked" not in st.session_state:
     st.session_state.consultant_unlocked = False
+if "q_loa_on" not in st.session_state:
+    st.session_state["q_loa_on"] = True      # Letter of Authority ticked by default - consultants untick if not porting numbers
 if "c_desired_rental" not in st.session_state:
     st.session_state.c_desired_rental = 0.0
 if "c_svc_disc" not in st.session_state:
@@ -1847,6 +1849,8 @@ with st.sidebar:
     num_employees   = st.number_input("No. of Employees", min_value=1, value=5, step=1, key="q_employees")
 
     st.markdown("### 📋 Deal Configuration")
+    st.text_input("Prepared by (consultant)", key="q_rep_name",
+                  help="Filled in from your login. Shown on the paperwork so we know who produced the deal.")
     # Deal type derived from payment model selection below
     # (set after payment_model widget is rendered)
     lease_term = st.selectbox("Service Agreement Term", list(LEASE_TERM_LABELS.keys()),
@@ -2564,7 +2568,7 @@ def _loa_data():
     bill_txt = g("q_loa_bill") or site_txt
     nums = _loa_numbers()
     cn = g("q_contact"); nm, _, jt = cn.partition(" - ")
-    return {"on": bool(st.session_state.get("q_loa_on")), "numbers": nums,
+    return {"on": bool(st.session_state.get("q_loa_on", True)), "numbers": nums,
             "provider": g("q_loa_provider"), "prov_addr": g("q_loa_prov_addr"),
             "mbn": g("q_loa_mbn") or (nums[0] if nums else ""), "acct": g("q_loa_acct"),
             "site": _loa_split_address(site_txt), "bill": _loa_split_address(bill_txt),
@@ -2733,10 +2737,11 @@ with col_hw2:
 
 # ── Number porting: Letter of Authority ────────────────────────────────────
 with col_hw2:
-    _loa_open = bool(st.session_state.get("q_loa_on"))
+    _loa_open = bool(st.session_state.get("q_loa_on", True))
     with st.expander("📞 Number porting - Letter of Authority", expanded=_loa_open):
-        st.caption("Tick this when we are taking over the customer's existing numbers. A Letter of Authority is added to "
-                   "the pack, and can also be downloaded on its own to send to the old provider.")
+        st.caption("Ticked by default so it isn't forgotten. Untick it if we are not taking over any of the customer's existing "
+                   "numbers. When ticked, a Letter of Authority is added to the pack, and can also be downloaded on its own "
+                   "to send to the old provider.")
         st.checkbox("Include a Letter of Authority", key="q_loa_on")
         if st.session_state.get("q_loa_on"):
             st.text_input("Existing service provider", key="q_loa_provider",
@@ -2980,7 +2985,8 @@ def build_proposal_pdf(sign=None, cis=False):
     # ════════════════════════════════════════════════════════════════════════
     p.add_page()
     y = topbar(date.today().strftime("%d %B %Y")) + 9
-    eyebrow(f"Prepared for {comp_name or 'your business'}", y)
+    eyebrow(f"Prepared for {comp_name or 'your business'}"
+            + (f"  \u00b7  by {(st.session_state.get('q_rep_name') or '').strip()}" if (st.session_state.get("q_rep_name") or "").strip() else ""), y)
     p.set_xy(M, y + 6.5); p.set_font("Helvetica", "B", 24); p.set_text_color(*TEXT)
     _t1 = _ps("Contract information " if cis else f"Your {_CO} "); p.cell(p.get_string_width(_t1), 11, _t1)
     p.set_text_color(*ACC); p.cell(0, 11, "sheet" if cis else "proposal", new_x="LMARGIN", new_y="NEXT")
@@ -3376,6 +3382,12 @@ def _build_pdf_core(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='
         pdf_obj.set_y(19)
         pdf_obj.set_x(48)
         pdf_obj.cell(120, 6, s(subtitle), ln=False, align="L")
+        _rep_hdr = s((st.session_state.get("q_rep_name") or "").strip())
+        if _rep_hdr:
+            pdf_obj.set_font("Helvetica", "I", 8)
+            pdf_obj.set_text_color(200, 205, 225)
+            pdf_obj.set_y(27); pdf_obj.set_x(48)
+            pdf_obj.cell(120, 5, f"Prepared by: {_rep_hdr}", ln=False, align="L")
         # Teal accent bar
         pdf_obj.set_fill_color(0, 181, 163)
         pdf_obj.rect(0, 42, 210, 2, 'F')
@@ -3426,6 +3438,10 @@ def _build_pdf_core(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='
         pdf.set_text_color(0, 181, 163)
         pdf.set_y(136)
         pdf.cell(0, 7, s(f"Prepared for: {_comp}"), ln=True, align="C")
+        _rep_cov = s((st.session_state.get("q_rep_name") or "").strip())
+        if _rep_cov:
+            pdf.set_font("Helvetica", "", 10)
+            pdf.cell(0, 6, f"Prepared by: {_rep_cov}", ln=True, align="C")
 
     pdf.set_font("Helvetica", "", 9)
     pdf.set_text_color(200, 200, 220)
