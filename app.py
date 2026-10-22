@@ -5281,7 +5281,8 @@ def compute_hw_sell(uplift_pct=None):
     for name, qty in other_quantities.items():
         _oh_info2 = OTHER_HARDWARE.get(name)
         if _oh_info2:
-            sub["other"] += _oh_info2.get("sell", _oh_info2["buy"] * _up) * qty
+            # the automatic "Broadband Router" line is a router for pricing purposes
+            sub["router" if name == "Broadband Router" else "other"] += _oh_info2.get("sell", _oh_info2["buy"] * _up) * qty
     # Switch uses uplift; routers use their fixed "Customer sell £" if one is set in Admin, otherwise uplift
     if not _no_switch:
         if switch_quantities:
@@ -5304,7 +5305,7 @@ def compute_hw_sell(uplift_pct=None):
             _ov = float(st.session_state.get(_key, 0.0) or 0.0)
         except Exception:
             _ov = 0.0
-        if _ov > 0:
+        if _ov > 0 and sub[_k] > 0:          # only where the deal actually has that kind of equipment
             sub[_k] = _ov
     return round(sum(sub.values()), 2)
 
@@ -7239,7 +7240,8 @@ with tab7:
                 st.number_input("Other hardware (£ total)", min_value=0.0, step=10.0, key="adm_ov_other")
             with hv3:
                 st.number_input("Switch (£ total)", min_value=0.0, step=10.0, key="adm_ov_switch")
-                st.number_input("Router(s) (£ total)", min_value=0.0, step=10.0, key="adm_ov_router")
+                st.number_input("Router(s) (£ total)", min_value=0.0, step=10.0, key="adm_ov_router",
+                                help="Covers the automatic Broadband Router line as well as any routers picked by hand.")
             st.caption("Lease deals price hardware from the pricebook lease rate, so these only change upfront and in-house deals.")
 
         # ── TAB 2: Hardware Catalogue ──────────────────────────────────────────
