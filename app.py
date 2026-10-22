@@ -2439,6 +2439,11 @@ with col_hw2:
             other_quantities[_CABLE_ITEM] = other_quantities.get(_CABLE_ITEM, 0) + int(additional_wired_ports)
             st.caption(f"Adds {int(additional_wired_ports)} x {_CABLE_ITEM} to the lease costs")
 
+        # Auto-select only adds a switch once there is something to plug in: a desk phone or an extra wired port.
+        if _switch_mode == "Auto-select" and not (any(int(q) > 0 for q in desktop_quantities.values()) or additional_wired_ports > 0):
+            auto_switch = False; _no_switch = True
+            st.caption("No switch added yet - one is chosen automatically once a desk phone or wired port is added.")
+
     with st.expander("📱 Mobiles", expanded=False):
         mobile_rows = []
         for net, pkgs in MOBILE_NETWORKS.items():
