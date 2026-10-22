@@ -707,7 +707,7 @@ _QUOTE_EXTRA = {
     "c_desired_rental", "c_svc_disc", "c_bb_disc", "c_cs_disc", "c_notes_val",                       # consultant: target rental, discount, special conditions
     "router_mode", "switch_mode", "add_wired_ports", "standalone_softphones_key",
     "cs_ai_portal_free",
-    "adm_bb_override", "adm_override_upfront", "adm_override_install", "adm_ov_desk", "adm_ov_cord", "adm_ov_hs", "adm_ov_other", "adm_ov_switch", "adm_ov_router",  # manager per-deal overrides
+    "adm_bb_override", "adm_override_upfront", "adm_override_install", "adm_cp_json",  # manager per-deal overrides
     "adm_credits_months", "adm_credits_amount", "adm_cashback", "mgr_cust", "mgr_init",
 }
 _QUOTE_EXCLUDE = {
@@ -5261,7 +5261,17 @@ def compute_hw_buy():
             total += ROUTERS[router_type]
     return total
 
-def compute_hw_sell(uplift_pct=None):
+_CP_KEYS = ("lic", "bb1", "hw", "inst", "bbinst", "desk", "cord", "hs", "other", "switch", "router")
+
+def _cp_saved():
+    """Saved manager overrides of what the customer is charged (Admin - Per-Deal Overrides - Customer prices)."""
+    try:
+        _d = json.loads(st.session_state.get("adm_cp_json") or "{}")
+        return _d if isinstance(_d, dict) else {}
+    except Exception:
+        return {}
+
+def compute_hw_sell(uplift_pct=None, apply_ov=True):
     """Compute total hardware sell value.
     Falls back to buy x (1 + uplift/100) for items without a sell price.
     Admin can override the customer price of each category for this deal (Per-Deal Overrides): 0 = automatic."""
@@ -5298,30 +5308,35 @@ def compute_hw_sell(uplift_pct=None):
                 if _rn in ROUTERS: sub["router"] += ROUTER_SELL.get(_rn, ROUTERS[_rn] * _up) * _rq
         elif router_type not in ("None / Customer Supplied", "") and router_type in ROUTERS:
             sub["router"] += ROUTER_SELL.get(router_type, ROUTERS[router_type] * _up)
-    # Per-deal manager overrides - the customer price for the whole category
-    for _k, _key in (("desk", "adm_ov_desk"), ("cord", "adm_ov_cord"), ("hs", "adm_ov_hs"),
-                     ("other", "adm_ov_other"), ("switch", "adm_ov_switch"), ("router", "adm_ov_router")):
-        try:
-            _ov = float(st.session_state.get(_key, 0.0) or 0.0)
-        except Exception:
-            _ov = 0.0
-        if _ov > 0 and sub[_k] > 0:          # only where the deal actually has that kind of equipment
-            sub[_k] = _ov
+    # Per-deal manager overrides - the customer price for the whole category, or for all the hardware
+    if apply_ov:
+        _cp = _cp_saved()
+        for _k in ("desk", "cord", "hs", "other", "switch", "router"):
+            _ov = _cp.get(_k)
+            if _ov is not None and sub[_k] > 0:          # only where the deal actually has that kind of equipment
+                sub[_k] = float(_ov)
+        if _cp.get("hw") is not None:
+            return round(float(_cp["hw"]), 2)
     return round(sum(sub.values()), 2)
 
-def compute_install_cost():
-    if override_install_cost > 0:
+def compute_install_cost(apply_ov=True):
+    if apply_ov and _cp_saved().get("inst") is not None:
+        return float(_cp_saved()["inst"])
+    if apply_ov and override_install_cost > 0:
         return override_install_cost         # manager override
     if install_type == "Engineer Install":
         return round(float(C.get("install_engineer", 450.0)) * max(1, int(install_days)), 2)
     return 0.0
 
+def _bb_install_main(apply_ov=True):
+    v = ll_install if bb_package == "Leased Line / Other" else BROADBAND[bb_provider][bb_package]["install"]
+    if apply_ov and _cp_saved().get("bbinst") is not None:
+        return float(_cp_saved()["bbinst"])
+    return v
+
 def compute_upfront():
     """Upfront = hw_sell + installation + BB install charge."""
-    bb_inst = BROADBAND[bb_provider][bb_package]["install"]
-    # Override with bespoke pricing for Leased Line / Other
-    if bb_package == "Leased Line / Other":
-        bb_inst = ll_install
+    bb_inst = _bb_install_main()
     return compute_hw_sell() + compute_install_cost() + bb_inst + extra_bb_install_total()
 
 def compute_service_charges(sw_sell=0.0, sw_cost=0.0):
@@ -5531,6 +5546,19 @@ if svc_disc_pct > 0 or bb_disc_pct > 0 or cs_disc_pct > 0:
     svc["total_sell"]  = (svc["bb_sell"] + svc["lic_monthly"] + svc.get("wallboard_mo", 0.0) +
                           svc.get("mobile_sell", 0.0) + sw_sell_total +
                           _cs_svc_sell + _sec_svc_sell + _it_svc_sell)
+# ── Manager overrides of the customer's monthly prices (Admin - Per-Deal Overrides - Customer prices) ──
+# Applied to the list total as well as the final one, so an override never counts as a "discount" against commission.
+_cp = _cp_saved()
+_cp_auto = {"lic": float(svc["lic_monthly"]), "bb1": float(svc["bb1_sell"])}
+_cp_delta = 0.0
+if _cp.get("lic") is not None:
+    _n = round(float(_cp["lic"]), 2); _cp_delta += _n - svc["lic_monthly"]; svc["lic_monthly"] = _n
+if _cp.get("bb1") is not None:
+    _n = round(float(_cp["bb1"]), 2); _cp_delta += _n - svc["bb1_sell"]; svc["bb1_sell"] = _n
+    svc["bb_sell"] = svc["bb1_sell"] + svc["bb2_sell"]
+if _cp_delta:
+    svc["total_sell"] = svc["total_sell"] + _cp_delta
+    _total_list_pre   = _total_list_pre + _cp_delta
 # Commission lost = the share of the deal's monthly services that is given away. Each discount is weighted by
 # how big its category is, so 50% off a small Call Scope order costs far less than 50% off all the licences.
 _disc_given_mo  = max(0.0, _total_list_pre - float(svc["total_sell"]))
@@ -5554,9 +5582,7 @@ else:
     # Upfront: compute hw_sell at upfront uplift % (default 20%, not lease uplift)
     hw_sell    = compute_hw_sell(uplift_pct=hw_uplift_upfront_override)
     hw_monthly_spread = 0.0
-    _bb_inst   = BROADBAND[bb_provider][bb_package]["install"]
-    if bb_package == "Leased Line / Other":
-        _bb_inst = ll_install
+    _bb_inst   = _bb_install_main()
     upfront    = hw_sell + compute_install_cost() + _bb_inst + extra_bb_install_total() + termination_cost + extra_costs_total
     if override_upfront > 0:
         upfront = override_upfront           # manager override
@@ -7230,19 +7256,71 @@ with tab7:
                 credits_months = st.number_input("Introductory Credit Period (months)", min_value=0, value=int(st.session_state.get("adm_credits_months",0)), step=1, key="adm_credits_months")
                 credits_amount = st.number_input("Monthly Credit Amount (£)", min_value=0.0, value=float(st.session_state.get("adm_credits_amount",0.0)), step=5.0, key="adm_credits_amount")
                 cashback_amount = st.number_input("Cashback / Settlement Fund (£)", min_value=0.0, value=float(st.session_state.get("adm_cashback",0.0)), step=50.0, key="adm_cashback")
-            st.markdown("**Hardware price to the customer** - upfront and in-house deals. Each is the total for that group of equipment on this deal. 0 = automatic.")
-            hv1, hv2, hv3 = st.columns(3)
-            with hv1:
-                st.number_input("Desk phones (£ total)", min_value=0.0, step=10.0, key="adm_ov_desk")
-                st.number_input("Cordless handsets (£ total)", min_value=0.0, step=10.0, key="adm_ov_cord")
-            with hv2:
-                st.number_input("Headsets (£ total)", min_value=0.0, step=10.0, key="adm_ov_hs")
-                st.number_input("Other hardware (£ total)", min_value=0.0, step=10.0, key="adm_ov_other")
-            with hv3:
-                st.number_input("Switch (£ total)", min_value=0.0, step=10.0, key="adm_ov_switch")
-                st.number_input("Router(s) (£ total)", min_value=0.0, step=10.0, key="adm_ov_router",
-                                help="Covers the automatic Broadband Router line as well as any routers picked by hand.")
-            st.caption("Lease deals price hardware from the pricebook lease rate, so these only change upfront and in-house deals.")
+            st.markdown("---")
+            st.markdown("### 💷 Customer prices - what the customer is charged on this deal")
+            st.caption("Type a price to override it; leave a box blank to keep the automatic price (0 means free). "
+                       "Press Save - the proposal, paperwork and Customer View then use these prices. Saved with the quote.")
+            _sv = _cp_saved()
+            def _cpf_save():
+                _d = {}
+                for _k in _CP_KEYS:
+                    _v = st.session_state.get(f"cpf_{_k}")
+                    if _v is not None:
+                        _d[_k] = float(_v)
+                st.session_state["adm_cp_json"] = json.dumps(_d)
+            def _cpf_reset():
+                st.session_state["adm_cp_json"] = ""
+                for _k in _CP_KEYS:
+                    st.session_state.pop(f"cpf_{_k}", None)
+            _auto_hw  = compute_hw_sell(apply_ov=False)
+            _auto_in  = compute_install_cost(apply_ov=False)
+            _auto_bbi = _bb_install_main(apply_ov=False)
+            with st.form("adm_cp_form"):
+                st.markdown("**Monthly**")
+                m1, m2 = st.columns(2)
+                with m1:
+                    st.number_input(f"Hosted user licences (£/mo) - now £{_cp_auto['lic']:,.2f}", min_value=0.0, step=1.0,
+                                    value=_sv.get("lic"), key="cpf_lic", format="%.2f")
+                with m2:
+                    st.number_input(f"Broadband, main line (£/mo) - now £{_cp_auto['bb1']:,.2f}", min_value=0.0, step=1.0,
+                                    value=_sv.get("bb1"), key="cpf_bb1", format="%.2f")
+                if not is_lease:
+                    st.markdown("**One-off (upfront / in-house deals)**")
+                    o1, o2, o3 = st.columns(3)
+                    with o1:
+                        st.number_input(f"All hardware (£ total) - now £{_auto_hw:,.2f}", min_value=0.0, step=10.0,
+                                        value=_sv.get("hw"), key="cpf_hw", format="%.2f",
+                                        help="Replaces the price of all the hardware on the deal.")
+                    with o2:
+                        st.number_input(f"Installation (£) - now £{_auto_in:,.2f}", min_value=0.0, step=25.0,
+                                        value=_sv.get("inst"), key="cpf_inst", format="%.2f")
+                    with o3:
+                        st.number_input(f"Broadband install (£) - now £{_auto_bbi:,.2f}", min_value=0.0, step=25.0,
+                                        value=_sv.get("bbinst"), key="cpf_bbinst", format="%.2f")
+                    with st.expander("Or set the price by type of equipment"):
+                        e1, e2, e3 = st.columns(3)
+                        with e1:
+                            st.number_input("Desk phones (£ total)", min_value=0.0, step=10.0, value=_sv.get("desk"), key="cpf_desk", format="%.2f")
+                            st.number_input("Cordless handsets (£ total)", min_value=0.0, step=10.0, value=_sv.get("cord"), key="cpf_cord", format="%.2f")
+                        with e2:
+                            st.number_input("Headsets (£ total)", min_value=0.0, step=10.0, value=_sv.get("hs"), key="cpf_hs", format="%.2f")
+                            st.number_input("Other hardware (£ total)", min_value=0.0, step=10.0, value=_sv.get("other"), key="cpf_other", format="%.2f")
+                        with e3:
+                            st.number_input("Switch (£ total)", min_value=0.0, step=10.0, value=_sv.get("switch"), key="cpf_switch", format="%.2f")
+                            st.number_input("Router(s) (£ total)", min_value=0.0, step=10.0, value=_sv.get("router"), key="cpf_router", format="%.2f",
+                                            help="Includes the automatic Broadband Router line.")
+                else:
+                    st.caption("This is a lease deal, so hardware and install are inside the lease rental. Use the Consultant tab to change the rental.")
+                b1, b2 = st.columns(2)
+                with b1:
+                    st.form_submit_button("💾 Save customer prices", type="primary", use_container_width=True, on_click=_cpf_save)
+                with b2:
+                    st.form_submit_button("↩️ Reset all to automatic", use_container_width=True, on_click=_cpf_reset)
+            _sum_mo  = f"£{total_mo:,.2f}/mo"
+            _sum_up  = f"£{upfront:,.2f}" if not is_spread else "£0.00 (paid monthly)"
+            st.info(f"Customer pays: **{_sum_mo} + VAT** monthly  ·  **{_sum_up}** one-off")
+            if _sv:
+                st.caption(":orange[Overrides are active on this deal: " + ", ".join(sorted(_sv.keys())) + "]")
 
         # ── TAB 2: Hardware Catalogue ──────────────────────────────────────────
         with panel_tabs[1]:
