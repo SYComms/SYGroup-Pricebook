@@ -936,7 +936,18 @@ BB_FIXED_RATES = {
     "SOGEA 80/20 Unlimited":   (28.12, 32.00),
 }
 
+def _clean_rows(rows):
+    """Blank cells from the Admin tables come back as NaN - treat them as 'not set' so they can never reach a price."""
+    out = []
+    for r in rows or []:
+        out.append({k: v for k, v in r.items() if not (isinstance(v, float) and v != v) and v is not None})
+    return out
+
 def _build_catalogues(cfg):
+    cfg = dict(cfg)
+    for _k in ("handsets_desktop", "handsets_cordless", "headsets", "other_hardware", "switches", "routers"):
+        if _k in cfg:
+            cfg[_k] = _clean_rows(cfg[_k])
     hd = {i["name"]: {k:v for k,v in i.items() if k!="name"} for i in cfg["handsets_desktop"]}
     hc = {i["name"]: {k:v for k,v in i.items() if k!="name"} for i in cfg["handsets_cordless"]}
     hs = {i["name"]: {"buy": i["buy"]}                         for i in cfg["headsets"]}
@@ -961,6 +972,14 @@ def _build_catalogues(cfg):
     return hd, hc, hs, oh, sw, rt, lr, ltr, ll, bb
 
 HANDSETS_DESKTOP, HANDSETS_CORDLESS, HEADSETS, OTHER_HARDWARE, SWITCHES, ROUTERS, LEASE_RATES, TRUE_LEASE_RATES, LEASE_TERM_LABELS, BROADBAND = _build_catalogues(cfg)
+# Optional fixed customer price per router (Admin - Hardware - Routers - "Customer sell £"). Blank = cost + upfront uplift.
+ROUTER_SELL = {}
+for _rr in _clean_rows(cfg.get("routers", [])):
+    try:
+        if float(_rr.get("sell", 0) or 0) > 0:
+            ROUTER_SELL[_rr["name"]] = float(_rr["sell"])
+    except Exception:
+        pass
 
 MOBILE_NETWORKS = {
     "EE": {
@@ -5265,7 +5284,7 @@ def compute_hw_sell(uplift_pct=None):
         if _oh_info2:
             sell = _oh_info2.get("sell", _oh_info2["buy"] * (1 + hw_uplift_override / 100))
             total += sell * qty
-    # Switch and router use uplift (no item-specific sell price stored)
+    # Switch uses uplift; routers use their fixed "Customer sell £" if one is set in Admin, otherwise uplift
     if not _no_switch:
         if switch_quantities:
             for _sn, _sq in switch_quantities.items():
@@ -5277,9 +5296,9 @@ def compute_hw_sell(uplift_pct=None):
     if add_router:
         if router_quantities:
             for _rn, _rq in router_quantities.items():
-                if _rn in ROUTERS: total += ROUTERS[_rn] * (1 + hw_uplift_override / 100) * _rq
+                if _rn in ROUTERS: total += ROUTER_SELL.get(_rn, ROUTERS[_rn] * (1 + hw_uplift_override / 100)) * _rq
         elif router_type not in ("None / Customer Supplied", "") and router_type in ROUTERS:
-            total += ROUTERS[router_type] * (1 + hw_uplift_override / 100)
+            total += ROUTER_SELL.get(router_type, ROUTERS[router_type] * (1 + hw_uplift_override / 100))
     return round(total, 2)
 
 def compute_install_cost():
@@ -7306,17 +7325,21 @@ with tab7:
                                    "poe_ports": st.column_config.NumberColumn("POE Ports")})
             with hw_col2:
                 st.markdown("**Routers**")
-                rt_df = pd.DataFrame(cfg["routers"])
+                st.caption("Customer sell £ is optional: a fixed upfront price per router. Leave blank to use cost + the upfront uplift.")
+                rt_df = pd.DataFrame(_clean_rows(cfg["routers"]))
+                if "sell" not in rt_df.columns:
+                    rt_df["sell"] = None
                 edited_rt = st.data_editor(rt_df, num_rows="dynamic", use_container_width=True, key="de_routers",
-                    column_config={"buy": st.column_config.NumberColumn("Buy £", format="%.2f")})
+                    column_config={"buy": st.column_config.NumberColumn("Buy £", format="%.2f"),
+                                   "sell": st.column_config.NumberColumn("Customer sell £", format="%.2f")})
 
             if st.button("✅ Apply Hardware Changes", type="primary", key="apply_hw"):
-                st.session_state.active_config["handsets_desktop"] = edited_desk.dropna(subset=["name"]).to_dict("records")
-                st.session_state.active_config["handsets_cordless"] = edited_cord.dropna(subset=["name"]).to_dict("records")
-                st.session_state.active_config["headsets"] = edited_hs.dropna(subset=["name"]).to_dict("records")
-                st.session_state.active_config["other_hardware"] = edited_oh.dropna(subset=["name"]).to_dict("records")
-                st.session_state.active_config["switches"] = edited_sw.dropna(subset=["name"]).to_dict("records")
-                st.session_state.active_config["routers"] = edited_rt.dropna(subset=["name"]).to_dict("records")
+                st.session_state.active_config["handsets_desktop"] = _clean_rows(edited_desk.dropna(subset=["name"]).to_dict("records"))
+                st.session_state.active_config["handsets_cordless"] = _clean_rows(edited_cord.dropna(subset=["name"]).to_dict("records"))
+                st.session_state.active_config["headsets"] = _clean_rows(edited_hs.dropna(subset=["name"]).to_dict("records"))
+                st.session_state.active_config["other_hardware"] = _clean_rows(edited_oh.dropna(subset=["name"]).to_dict("records"))
+                st.session_state.active_config["switches"] = _clean_rows(edited_sw.dropna(subset=["name"]).to_dict("records"))
+                st.session_state.active_config["routers"] = _clean_rows(edited_rt.dropna(subset=["name"]).to_dict("records"))
                 st.success("Hardware catalogue updated! Changes are live for this session.")
                 st.rerun()
 
