@@ -332,6 +332,14 @@ def _verify_pw(pw, stored):
 _DUMMY_HASH = "pbkdf2_sha256$200000$" + "00" * 16 + "$" + "00" * 32
 _USERS = _load_users()
 
+def _admin_own_pw_ok(entered):
+    """An admin-role user can unlock the Admin / Consultant areas with their own login password."""
+    _cu = st.session_state.get("current_user") or {}
+    if _cu.get("role") != "admin":
+        return False
+    _u = _USERS.get(_cu.get("email", ""))
+    return bool(_u) and _verify_pw(entered or "", _u["hash"])
+
 if "app_authenticated" not in st.session_state:
     st.session_state.app_authenticated = False
 if "selected_brand" not in st.session_state:
@@ -367,9 +375,6 @@ if not st.session_state.app_authenticated:
                             _dom = (_em or "").strip().lower().split("@")[-1]
                             _b = _u["brand"] if _u["brand"] in BRAND_CONFIGS else _DOMAIN_BRAND.get(_dom, "SY Comms")
                             st.session_state.selected_brand = _b
-                            if _u["role"] == "admin":
-                                st.session_state.admin_unlocked = True
-                                st.session_state.consultant_unlocked = True
                             if _u["name"] and not st.session_state.get("q_rep_name"):
                                 st.session_state["q_rep_name"] = _u["name"]
                             st.session_state.app_authenticated = True
@@ -6335,7 +6340,10 @@ with tab5:
         with c_col2:
             if st.button("Unlock 💼", type="primary", use_container_width=True, key="c_unlock"):
                 _cons_pw = _secret("CONSULTANT_PASSWORD")
-                if not _cons_pw:
+                if _admin_own_pw_ok(c_pw):
+                    st.session_state.consultant_unlocked = True
+                    st.rerun()
+                elif not _cons_pw:
                     st.error("Consultant sign-in isn't set up yet. Add CONSULTANT_PASSWORD to the app's Secrets.")
                 elif hmac.compare_digest(c_pw.encode(), _cons_pw.encode()):
                     st.session_state.consultant_unlocked = True
@@ -7137,15 +7145,21 @@ with tab7:
         st.markdown("#### Enter password to unlock")
         pw_col1, pw_col2 = st.columns([3, 1])
         with pw_col1:
-            entered_pw = st.text_input("Password", type="password", key="admin_pw_input", label_visibility="collapsed", placeholder="Enter manager password...")
+            entered_pw = st.text_input("Password", type="password", key="admin_pw_input", label_visibility="collapsed", placeholder="Enter your login password (or the manager password)...")
         with pw_col2:
             if st.button("Unlock 🔓", use_container_width=True):
                 h = hashlib.sha256(entered_pw.encode()).hexdigest()
                 _adm_secret = _secret("ADMIN_PASSWORD")
                 _cfg_hash   = st.session_state.active_config["meta"].get("password_hash", "")
                 _cfg_ok     = bool(_cfg_hash) and _cfg_hash != _DEFAULT_PWD_HASH  # ignore built-in default
-                if not _adm_secret and not _cfg_ok:
-                    st.error("Admin sign-in isn't set up yet. Add ADMIN_PASSWORD to the app's Secrets.")
+                if _admin_own_pw_ok(entered_pw):
+                    st.session_state.admin_unlocked = True
+                    st.rerun()
+                elif (st.session_state.get("current_user") or {}).get("role") == "admin" and not _adm_secret and not _cfg_ok:
+                    st.error("Incorrect password - use the password you signed in with.")
+                elif not _adm_secret and not _cfg_ok:
+                    st.error("Admin sign-in isn't set up yet. Add ADMIN_PASSWORD to the app's Secrets"
+                             + (", or sign in as an admin user and use your own password." if _USERS else "."))
                 elif ((_adm_secret and hmac.compare_digest(entered_pw.encode(), _adm_secret.encode()))
                       or (_cfg_ok and hmac.compare_digest(h, _cfg_hash))):
                     st.session_state.admin_unlocked = True
