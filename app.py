@@ -707,7 +707,7 @@ _QUOTE_EXTRA = {
     "c_desired_rental", "c_svc_disc", "c_bb_disc", "c_cs_disc", "c_notes_val",                       # consultant: target rental, discount, special conditions
     "router_mode", "switch_mode", "add_wired_ports", "standalone_softphones_key",
     "cs_ai_portal_free",
-    "adm_bb_override", "adm_override_upfront", "adm_override_install",  # manager per-deal overrides
+    "adm_bb_override", "adm_override_upfront", "adm_override_install", "adm_ov_desk", "adm_ov_cord", "adm_ov_hs", "adm_ov_other", "adm_ov_switch", "adm_ov_router",  # manager per-deal overrides
     "adm_credits_months", "adm_credits_amount", "adm_cashback", "mgr_cust", "mgr_init",
 }
 _QUOTE_EXCLUDE = {
@@ -5263,43 +5263,50 @@ def compute_hw_buy():
 
 def compute_hw_sell(uplift_pct=None):
     """Compute total hardware sell value.
-    Falls back to buy x (1 + uplift/100) for items without a sell price."""
+    Falls back to buy x (1 + uplift/100) for items without a sell price.
+    Admin can override the customer price of each category for this deal (Per-Deal Overrides): 0 = automatic."""
     if uplift_pct is None:
         uplift_pct = hw_uplift_override
-    total = 0.0
+    _up = 1 + hw_uplift_override / 100
+    sub = {"desk": 0.0, "cord": 0.0, "hs": 0.0, "other": 0.0, "switch": 0.0, "router": 0.0}
     for name, qty in desktop_quantities.items():
         info = HANDSETS_DESKTOP[name]
-        sell = info.get("sell", info["buy"] * (1 + hw_uplift_override / 100))
-        total += sell * qty
+        sub["desk"] += info.get("sell", info["buy"] * _up) * qty
     for name, qty in cordless_quantities.items():
         info = HANDSETS_CORDLESS[name]
-        sell = info.get("sell", info["buy"] * (1 + hw_uplift_override / 100))
-        total += sell * qty
+        sub["cord"] += info.get("sell", info["buy"] * _up) * qty
     for name, qty in headset_quantities.items():
         info = HEADSETS[name]
-        sell = info.get("sell", info["buy"] * (1 + hw_uplift_override / 100))
-        total += sell * qty
+        sub["hs"] += info.get("sell", info["buy"] * _up) * qty
     for name, qty in other_quantities.items():
         _oh_info2 = OTHER_HARDWARE.get(name)
         if _oh_info2:
-            sell = _oh_info2.get("sell", _oh_info2["buy"] * (1 + hw_uplift_override / 100))
-            total += sell * qty
+            sub["other"] += _oh_info2.get("sell", _oh_info2["buy"] * _up) * qty
     # Switch uses uplift; routers use their fixed "Customer sell £" if one is set in Admin, otherwise uplift
     if not _no_switch:
         if switch_quantities:
             for _sn, _sq in switch_quantities.items():
                 _si = next((s for s in SWITCHES if s["name"] == _sn), None)
-                if _si: total += _si["buy"] * (1 + hw_uplift_override / 100) * _sq
+                if _si: sub["switch"] += _si["buy"] * _up * _sq
         else:
             sw = get_recommended_switch(compute_poe_needed())
-            total += sw.get("sell", sw["buy"] * (1 + hw_uplift_override / 100))
+            sub["switch"] += sw.get("sell", sw["buy"] * _up)
     if add_router:
         if router_quantities:
             for _rn, _rq in router_quantities.items():
-                if _rn in ROUTERS: total += ROUTER_SELL.get(_rn, ROUTERS[_rn] * (1 + hw_uplift_override / 100)) * _rq
+                if _rn in ROUTERS: sub["router"] += ROUTER_SELL.get(_rn, ROUTERS[_rn] * _up) * _rq
         elif router_type not in ("None / Customer Supplied", "") and router_type in ROUTERS:
-            total += ROUTER_SELL.get(router_type, ROUTERS[router_type] * (1 + hw_uplift_override / 100))
-    return round(total, 2)
+            sub["router"] += ROUTER_SELL.get(router_type, ROUTERS[router_type] * _up)
+    # Per-deal manager overrides - the customer price for the whole category
+    for _k, _key in (("desk", "adm_ov_desk"), ("cord", "adm_ov_cord"), ("hs", "adm_ov_hs"),
+                     ("other", "adm_ov_other"), ("switch", "adm_ov_switch"), ("router", "adm_ov_router")):
+        try:
+            _ov = float(st.session_state.get(_key, 0.0) or 0.0)
+        except Exception:
+            _ov = 0.0
+        if _ov > 0:
+            sub[_k] = _ov
+    return round(sum(sub.values()), 2)
 
 def compute_install_cost():
     if override_install_cost > 0:
@@ -7222,6 +7229,18 @@ with tab7:
                 credits_months = st.number_input("Introductory Credit Period (months)", min_value=0, value=int(st.session_state.get("adm_credits_months",0)), step=1, key="adm_credits_months")
                 credits_amount = st.number_input("Monthly Credit Amount (£)", min_value=0.0, value=float(st.session_state.get("adm_credits_amount",0.0)), step=5.0, key="adm_credits_amount")
                 cashback_amount = st.number_input("Cashback / Settlement Fund (£)", min_value=0.0, value=float(st.session_state.get("adm_cashback",0.0)), step=50.0, key="adm_cashback")
+            st.markdown("**Hardware price to the customer** - upfront and in-house deals. Each is the total for that group of equipment on this deal. 0 = automatic.")
+            hv1, hv2, hv3 = st.columns(3)
+            with hv1:
+                st.number_input("Desk phones (£ total)", min_value=0.0, step=10.0, key="adm_ov_desk")
+                st.number_input("Cordless handsets (£ total)", min_value=0.0, step=10.0, key="adm_ov_cord")
+            with hv2:
+                st.number_input("Headsets (£ total)", min_value=0.0, step=10.0, key="adm_ov_hs")
+                st.number_input("Other hardware (£ total)", min_value=0.0, step=10.0, key="adm_ov_other")
+            with hv3:
+                st.number_input("Switch (£ total)", min_value=0.0, step=10.0, key="adm_ov_switch")
+                st.number_input("Router(s) (£ total)", min_value=0.0, step=10.0, key="adm_ov_router")
+            st.caption("Lease deals price hardware from the pricebook lease rate, so these only change upfront and in-house deals.")
 
         # ── TAB 2: Hardware Catalogue ──────────────────────────────────────────
         with panel_tabs[1]:
