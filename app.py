@@ -1662,18 +1662,8 @@ with st.sidebar:
     _appt_rate = APPT_RATES[appt_type]
     st.markdown("---")
     with st.expander("🔎 Pull customer from Zoho", expanded=False):
-        _zsetup = st.checkbox("🔧 Connect / reconnect Zoho (admin)", key="_zs_open",
-                              value=not _zoho_configured())
-        if _zsetup:
-            _zadm_ok = st.session_state.get("admin_unlocked", False)
-            if not _zadm_ok:
-                _zpw = st.text_input("Admin password", type="password", key="_zs_pw")
-                _zreal = _secret("ADMIN_PASSWORD")
-                _zadm_ok = bool(_zreal) and hmac.compare_digest(_zpw.encode(), _zreal.encode())
-                if _zpw and not _zadm_ok:
-                    st.caption("Wrong password.")
-            if _zadm_ok:
-                _zoho_setup_ui("_zs")
+        if not _zoho_configured():
+            st.caption("Zoho isn't connected yet - please ask an admin (the connection is set up in the Admin panel).")
         if _zoho_configured():
             _zq = st.text_input("Company name", key="_zoho_q", placeholder="Start of the company name (accounts and leads)")
             if st.button("Search Zoho", key="_zoho_search", use_container_width=True) and _zq.strip():
@@ -1686,7 +1676,7 @@ with st.sidebar:
                     _zm = str(_ze)
                     st.session_state["_zoho_msg"] = (
                         "Zoho connected, but this refresh token doesn't have permission to read Accounts (it was made with a different scope). "
-                        "Tick 'Connect / reconnect Zoho (admin)' just above, and make a new one using the scope ZohoCRM.modules.READ,ZohoCRM.settings.READ." if "scope" in _zm.lower() else f"Couldn't reach Zoho: {_zm}")
+                        "Please ask an admin to make a new one in the Admin panel (Zoho connection) using the scope ZohoCRM.modules.READ,ZohoCRM.settings.READ." if "scope" in _zm.lower() else f"Couldn't reach Zoho: {_zm}")
             if st.session_state.get("_zoho_msg"):
                 st.caption(st.session_state["_zoho_msg"])
             _zres = st.session_state.get("_zoho_results") or []
