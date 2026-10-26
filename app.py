@@ -506,7 +506,7 @@ def _default_config():
             {"months": 48, "label": "4 Year (1+47)", "rate": 27.62},
             {"months": 60, "label": "5 Year (1+59)", "rate": 23.31},
             {"months": 72, "label": "6 Year (1+71)", "rate": 19.11},
-            {"months": 84, "label": "7 Year (1+83)", "rate": 18.25},
+            {"months": 84, "label": "7 Year (1+83)", "rate": 18.25, "true_rate": 16.46},
         ],
         "broadband": [
             {"provider": "SY", "package": "FTTP 40/10 Unlimited",   "cost": 22.45, "sell": 35.00, "install": 100.00},
@@ -593,6 +593,15 @@ def _migrate_call_scope_prices(cfg):
     cfg["constants"].setdefault("cs_min_sell", 0.25)
     cfg["_cs_price_v"] = 1
 _migrate_call_scope_prices(st.session_state.active_config)
+def _migrate_lease_84_funder(cfg):
+    """One-off: 7-year funder rate 16.46 (only where no funder rate has been entered for that row)."""
+    if cfg.get("_lr84_v", 0) >= 1:
+        return
+    for _r in cfg.get("lease_rates", []):
+        if _r.get("months") == 84 and "true_rate" not in _r:
+            _r["true_rate"] = 16.46
+    cfg["_lr84_v"] = 1
+_migrate_lease_84_funder(st.session_state.active_config)
 if "admin_unlocked" not in st.session_state:
     st.session_state.admin_unlocked = False
 if "consultant_unlocked" not in st.session_state:
@@ -3374,6 +3383,7 @@ def _build_pdf_core(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='
     _reg      = s(comp_reg)
     _btype    = s(biz_type)
     _contact  = s(contact_name)
+    _signer   = s(sig_name) if (sig_name and str(sig_name).strip()) else _contact   # when signed, show who actually signed
     _phone    = s(company_phone)
     _demail   = s(director_email)
     _bemail   = s(billing_email)
@@ -3980,7 +3990,7 @@ def _build_pdf_core(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='
                company=sig_company, timestamp=sig_timestamp)
     pdf.cell(0, 0.5, "", border="T", ln=True)
     pdf.ln(3)
-    pdf.cell(0, 5, f"Name & Position: {_contact or '___________________________'}", ln=True)
+    pdf.cell(0, 5, f"Name & Position: {_signer or '___________________________'}", ln=True)
     pdf.ln(6)
 
     # -- PAGE 3: NETWORK SERVICES AGREEMENT --
@@ -4101,7 +4111,7 @@ def _build_pdf_core(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='
     pdf.cell(0, 0.5, "", border="T", ln=True)
     pdf.ln(3)
     pdf.set_font("Helvetica", "", 9)
-    pdf.cell(0, 5, f"Name & Position: {_contact or '___________________________'}", ln=True)
+    pdf.cell(0, 5, f"Name & Position: {_signer or '___________________________'}", ln=True)
     pdf.ln(4)
     # -- PAGE 4: LEASE AGREEMENT / QUOTATION SUMMARY --
     pdf.add_page()
@@ -4320,7 +4330,7 @@ def _build_pdf_core(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='
     pdf.ln(3)
     pdf.set_font("Helvetica", "", 9)
     pdf.set_font("Helvetica", "", 9)
-    pdf.cell(0, 5, f"Name & Position: {_contact or '___________________________'}", ln=True)
+    pdf.cell(0, 5, f"Name & Position: {_signer or '___________________________'}", ln=True)
     pdf.cell(0, 5, f"Date: {date.today()}", ln=True)
 
 
@@ -4344,7 +4354,7 @@ def _build_pdf_core(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='
             pdf.set_font("Helvetica","B",10); pdf.cell(0,6,f"  {title}",fill=True,ln=True)
             pdf.set_text_color(0,0,0)
         _eca_hdr("Customer Details")
-        _eca_row("Customer Name", s(_contact or "________________________"))
+        _eca_row("Customer Name", s(_signer or "________________________"))
         _eca_row("Company",       s(_comp    or "________________________"))
         _eca_row("Date",          date.today().strftime("%d/%m/%Y"))
         pdf.ln(2)
@@ -4415,7 +4425,7 @@ def _build_pdf_core(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='
         pdf.set_font("Helvetica","B",9)
         pdf.cell(0,5,"Customer Signature",ln=True)
         pdf.set_font("Helvetica","",9)
-        pdf.cell(80,5,f"Name: {s(_contact or '')}",ln=False)
+        pdf.cell(80,5,f"Name: {s(_signer or '')}",ln=False)
         pdf.cell(0,5,f"Company: {s(_comp or '')}",ln=True)
         if sig_bytes:
             try:
@@ -4557,7 +4567,7 @@ def _build_pdf_core(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='
     pdf.set_font("Helvetica","B",9)
     pdf.cell(0,5,"On Behalf of (The Customer):",ln=True)
     pdf.set_font("Helvetica","",9)
-    pdf.cell(80,5,f"Name & Position: {s(_contact or '')}",ln=False)
+    pdf.cell(80,5,f"Name & Position: {s(_signer or '')}",ln=False)
     pdf.cell(0,5,f"Date: {date.today().strftime('%d/%m/%Y')}",ln=True)
     if sig_bytes:
         try:
@@ -4703,7 +4713,7 @@ def _build_pdf_core(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='
     pdf.cell(0,5,"For & on Behalf of (The Customer)",ln=True)
     pdf.ln(2)
     pdf.set_font("Helvetica","",9)
-    pdf.cell(90,5,f"Name & Position: {s(_contact or '')} {s(_btype or '')}",ln=False)
+    pdf.cell(90,5,f"Name & Position: {s(_signer or '')} {s(_btype or '')}",ln=False)
     pdf.cell(0,5,f"Date: {date.today().strftime('%d/%m/%Y')}",ln=True)
     if sig_bytes:
         try:
