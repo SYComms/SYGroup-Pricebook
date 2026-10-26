@@ -7950,164 +7950,169 @@ def pat_class(v):
     return "red"
 
 # ── 3 customer-safe metrics always visible ─────────────────────────────────
-st.markdown('<div class="section-header">📊 Deal Dashboard</div>', unsafe_allow_html=True)
-
-if is_spread:
-    k1, k2 = st.columns(2)
-    with k1:
-        st.markdown(f"""
-        <div class="metric-card">
-          <div class="metric-label">Total Monthly</div>
-          <div class="metric-value">£{total_mo:.2f}</div>
-          <div class="metric-sub">Services + HW spread excl. VAT</div>
-        </div>""", unsafe_allow_html=True)
-    with k2:
-        st.markdown(f"""
-        <div class="metric-card">
-          <div class="metric-label">Monthly Services</div>
-          <div class="metric-value">£{svc["total_sell"]:.2f}</div>
-          <div class="metric-sub">BB + Licences + Mobiles</div>
-        </div>""", unsafe_allow_html=True)
-else:
-    k1, k2, k3 = st.columns(3)
-    with k1:
-        st.markdown(f"""
-        <div class="metric-card">
-          <div class="metric-label">Total Monthly</div>
-          <div class="metric-value">£{total_mo:.2f}</div>
-          <div class="metric-sub">Services excl. VAT</div>
-        </div>""", unsafe_allow_html=True)
-    with k2:
-        st.markdown(f"""
-        <div class="metric-card">
-          <div class="metric-label">Upfront Hardware</div>
-          <div class="metric-value">£{upfront:.0f}</div>
-          <div class="metric-sub">One-off payment excl. VAT</div>
-        </div>""", unsafe_allow_html=True)
-    with k3:
-        st.markdown(f"""
-        <div class="metric-card">
-          <div class="metric-label">Monthly Services</div>
-          <div class="metric-value">£{svc["total_sell"]:.2f}</div>
-          <div class="metric-sub">BB + Licences + Mobiles</div>
-        </div>""", unsafe_allow_html=True)
-
-# ── Internal financials
-# ── Internal financials - collapsed by default, hidden from customer ────────
-pc = pat_class(pat)
-pat_warn = ""
-if pat < 250:
-    pat_warn = "⚠️ Below £250 - must go to office"
-elif pat < 500:
-    pat_warn = "⚠️ Low PAT - consider manager review"
-
+# Admin-only switch to hide the whole Deal Dashboard (customer-safe cards and internal financials)
 if st.session_state.admin_unlocked:
-    # Row 1 - 4 original cards
-    _gp_sub = (f"Rental £{_desired_rental:.2f}/mo (calculated £{pl_data['rental']:.2f})"
-               if abs(_desired_rental - pl_data["rental"]) > 0.01 else f"Rental: £{pl_data['rental']:.2f}/mo")
-    fi1, fi2, fi3, fi4 = st.columns(4)
-    with fi1:
-        st.markdown(f'''<div class="metric-card">
-          <div class="metric-label">Gross Profit (Lease)</div>
-          <div class="metric-value {pc}">£{_adjusted_gp:.0f}</div>
-          <div class="metric-sub">{_gp_sub}</div>
-        </div>''', unsafe_allow_html=True)
-    with fi2:
-        st.markdown(f'''<div class="metric-card">
-          <div class="metric-label">HW Buy → Sell</div>
-          <div class="metric-value" style="font-size:1.3rem">£{hw_buy:.0f} → £{hw_sell:.0f}</div>
-          <div class="metric-sub">Sell: £{hw_sell:.0f} (pricebook rates)</div>
-        </div>''', unsafe_allow_html=True)
-    with fi3:
-        st.markdown(f'''<div class="metric-card">
-          <div class="metric-label">Sub Total (SRRP basis)</div>
-          <div class="metric-value" style="font-size:1.3rem">£{pl_data["sub_total"]:.0f}</div>
-          <div class="metric-sub">SRRP £{pl_data["hw_srrp"]:.0f} + COS £{pl_data["cos_full"]:.0f}</div>
-        </div>''', unsafe_allow_html=True)
-    with fi4:
-        st.markdown(f'''<div class="metric-card">
-          <div class="metric-label">Commission ({commission_units:.2f} units)</div>
-          <div class="metric-value" style="font-size:1.3rem;color:var(--accent)">£{commission:.0f}</div>
-          <div class="metric-sub">£{commission_per_unit:.0f}/unit · £{commission_unit_size:.0f} GP = 1 unit</div>
-        </div>''', unsafe_allow_html=True)
-    st.markdown("---")
-    # Row 2 - Profit breakdown cards
-    _svc_cost_pm    = (svc["bb_cost"] + total_voice_channels * C.get("vc_cost_per_seat",2.95) + sw_cost_total
-                       + svc.get("mobile_cost",0.0) + _cs_svc_cost + _sec_svc_cost + _it_svc_cost)
-    _svc_sell_pm    = svc["total_sell"]
-    _svc_margin_pm  = _svc_sell_pm - _svc_cost_pm
-    _svc_profit_term = round(_svc_margin_pm * lease_term, 2)
-    _total_gp        = round(_adjusted_gp + _svc_profit_term + printer_lease_profit, 2)
-    _lp_is_target    = (st.session_state.get("c_desired_rental", 0) or 0) > 0 and abs(_desired_rental - base_rental) > 0.01
-    # Lease value + maximum termination
-    lv1, lv2 = st.columns(2)
-    with lv1:
-        st.markdown(f'''<div class="metric-card" style="border-left:4px solid var(--accent)">
-          <div class="metric-label">Lease Value</div>
-          <div class="metric-value">{"£" + format(lease_value, ",.0f") if is_lease else "n/a"}</div>
-          <div class="metric-sub">{("What the funder pays for the £" + format(_lv_rental, ",.2f") + "/mo rental in this deal (÷ " + format(true_rate, ".2f") + " rate × 1,000)" if _target_active else "What the funder pays for £" + format(_lv_rental, ",.2f") + "/mo value rental (÷ " + format(true_rate, ".2f") + " rate × 1,000), before any buyout") if is_lease else ("In-house system rental - no finance lease" if is_inhouse else "Upfront purchase - no lease")}</div>{('<div class="metric-sub" style="margin-top:.35rem;color:var(--accent-2)!important">This deal: £' + format(_desired_rental, ",.2f") + "/mo incl. buyout, funder pays £" + format(_desired_rental / true_rate * 1000.0 if true_rate > 0 else 0, ",.0f") + "</div>") if (is_spread and not _target_active and abs(_desired_rental - _lv_rental) > 0.01) else ""}{('<div class="metric-sub" style="margin-top:.35rem">Equipment only (before buyout cover): £' + format(_lv_equipment_only / true_rate * 1000.0 if true_rate > 0 else 0, ",.0f") + " funder pays</div>") if (is_lease and _target_active and abs(_lv_rental - _lv_equipment_only) > 0.01) else ""}
-        </div>''', unsafe_allow_html=True)
-    with lv2:
-        _over = termination_over
-        st.markdown(f'''<div class="metric-card" style="border-left:4px solid {"var(--warn)" if _over else "var(--good)"}">
-          <div class="metric-label">Max Termination ({MAX_TERMINATION_PCT:.0f}% of lease value)</div>
-          <div class="metric-value" style="color:{"var(--warn)" if _over else "var(--good)"}!important">{"£" + format(max_termination, ",.0f") if is_lease else "n/a"}</div>
-          <div class="metric-sub">{("Buyout £" + format(termination_cost, ",.0f") + (" - " + format(termination_over_pct, ".0f") + "% (£" + format(termination_cost - max_termination, ",.0f") + ") over the maximum" if _over else " - within the maximum")) if (is_spread and termination_cost > 0) else ("No buyout. At the maximum, lease profit would be £" + format(_gp_before_buyout - max_termination, ",.0f") if is_spread else "No buyout on this deal")}</div>{("<div class='metric-sub' style='color:var(--warn)!important;margin-top:.3rem'>Safe buyout at this rental: £" + format(safe_buyout, ",.0f") + "</div>") if safe_buyout_limited else ""}{("<div class='metric-sub' style='color:var(--warn)!important;margin-top:.3rem'>Target rental £" + format(rental_short_of_buyout, ",.2f") + "/mo short of covering the buyout</div>") if rental_short_of_buyout > 0 else ""}
-        </div>''', unsafe_allow_html=True)
-    if printer_rows:
-        pr1, pr2 = st.columns(2)
-        with pr1:
-            st.markdown(f'''<div class="metric-card" style="border-left:4px solid var(--accent)">
-              <div class="metric-label">Printer Lease Profit</div>
-              <div class="metric-value">£{printer_lease_profit:,.0f}</div>
-              <div class="metric-sub">Funder pays £{printer_funder:,.0f} for £{printer_monthly:.2f}/mo over {printer_term} months, less costs £{printer_cost_total:,.0f} · {printer_lease_profit / 4000:.2f} units</div>
+    st.toggle("📊 Show Deal Dashboard", value=True, key="show_deal_dashboard")
+_show_dash = st.session_state.get("show_deal_dashboard", True) if st.session_state.admin_unlocked else True
+if _show_dash:
+    st.markdown('<div class="section-header">📊 Deal Dashboard</div>', unsafe_allow_html=True)
+
+    if is_spread:
+        k1, k2 = st.columns(2)
+        with k1:
+            st.markdown(f"""
+            <div class="metric-card">
+              <div class="metric-label">Total Monthly</div>
+              <div class="metric-value">£{total_mo:.2f}</div>
+              <div class="metric-sub">Services + HW spread excl. VAT</div>
+            </div>""", unsafe_allow_html=True)
+        with k2:
+            st.markdown(f"""
+            <div class="metric-card">
+              <div class="metric-label">Monthly Services</div>
+              <div class="metric-value">£{svc["total_sell"]:.2f}</div>
+              <div class="metric-sub">BB + Licences + Mobiles</div>
+            </div>""", unsafe_allow_html=True)
+    else:
+        k1, k2, k3 = st.columns(3)
+        with k1:
+            st.markdown(f"""
+            <div class="metric-card">
+              <div class="metric-label">Total Monthly</div>
+              <div class="metric-value">£{total_mo:.2f}</div>
+              <div class="metric-sub">Services excl. VAT</div>
+            </div>""", unsafe_allow_html=True)
+        with k2:
+            st.markdown(f"""
+            <div class="metric-card">
+              <div class="metric-label">Upfront Hardware</div>
+              <div class="metric-value">£{upfront:.0f}</div>
+              <div class="metric-sub">One-off payment excl. VAT</div>
+            </div>""", unsafe_allow_html=True)
+        with k3:
+            st.markdown(f"""
+            <div class="metric-card">
+              <div class="metric-label">Monthly Services</div>
+              <div class="metric-value">£{svc["total_sell"]:.2f}</div>
+              <div class="metric-sub">BB + Licences + Mobiles</div>
+            </div>""", unsafe_allow_html=True)
+
+    # ── Internal financials
+    # ── Internal financials - collapsed by default, hidden from customer ────────
+    pc = pat_class(pat)
+    pat_warn = ""
+    if pat < 250:
+        pat_warn = "⚠️ Below £250 - must go to office"
+    elif pat < 500:
+        pat_warn = "⚠️ Low PAT - consider manager review"
+
+    if st.session_state.admin_unlocked:
+        # Row 1 - 4 original cards
+        _gp_sub = (f"Rental £{_desired_rental:.2f}/mo (calculated £{pl_data['rental']:.2f})"
+                   if abs(_desired_rental - pl_data["rental"]) > 0.01 else f"Rental: £{pl_data['rental']:.2f}/mo")
+        fi1, fi2, fi3, fi4 = st.columns(4)
+        with fi1:
+            st.markdown(f'''<div class="metric-card">
+              <div class="metric-label">Gross Profit (Lease)</div>
+              <div class="metric-value {pc}">£{_adjusted_gp:.0f}</div>
+              <div class="metric-sub">{_gp_sub}</div>
             </div>''', unsafe_allow_html=True)
-        with pr2:
-            st.markdown(f'''<div class="metric-card" style="border-left:4px solid var(--accent)">
-              <div class="metric-label">Print Margin (estimated)</div>
-              <div class="metric-value">£{printer_print_margin_mo:,.2f}/mo</div>
-              <div class="metric-sub">Device uplift {PRN_UPLIFT:.0f}% · print uplift {PRN_CPC_UPLIFT:.0f}%</div>
+        with fi2:
+            st.markdown(f'''<div class="metric-card">
+              <div class="metric-label">HW Buy → Sell</div>
+              <div class="metric-value" style="font-size:1.3rem">£{hw_buy:.0f} → £{hw_sell:.0f}</div>
+              <div class="metric-sub">Sell: £{hw_sell:.0f} (pricebook rates)</div>
             </div>''', unsafe_allow_html=True)
-    # Finance viability - admin only (consultants no longer see this)
-    if fin_band != "none":
-        _fb = {"good":    ("Likely to pass",     "var(--good)"),
-               "stretch": ("Possible (stretch)", "var(--warn)"),
-               "unlikely":("Unlikely to pass",   "var(--bad, #F87171)")}[fin_band]
-        st.markdown(f'''<div class="metric-card" style="border-left:4px solid {_fb[1]}">
-          <div class="metric-label">Finance Viability</div>
-          <div class="metric-value" style="color:{_fb[1]}">{_fb[0]}</div>
-          <div class="metric-sub">Funded £{fin_funded:,.0f} across {fin_handsets} handset(s) = £{fin_per_handset:,.0f} per handset
-          (comfortable up to £{FIN_OK_PER_HANDSET:,.0f}, stretch up to £{FIN_MAX_PER_HANDSET:,.0f})</div>
-        </div>''', unsafe_allow_html=True)
-    pb1, pb2, pb3   = st.columns(3)
-    with pb1:
-        st.markdown(f'''<div class="metric-card" style="border-left:4px solid var(--border-strong)">
-          <div class="metric-label">Lease Profit</div>
-          <div class="metric-value" style="color:var(--text)">£{_adjusted_gp:.0f}</div>
-          <div class="metric-sub">At £{_desired_rental:,.2f}/mo {"target" if _lp_is_target else "calculated"} rental: {("£" + format(_gp_before_buyout, ",.0f") + " before buyout, less £" + format(termination_cost, ",.0f") + " buyout") if termination_cost > 0 else ("funder pays £" + format(_profit_disc_turnover, ",.0f") + " less costs £" + format(pl_data["cos_full"], ",.0f"))}</div>
-        </div>''', unsafe_allow_html=True)
-    with pb2:
-        st.markdown(f'''<div class="metric-card" style="border-left:4px solid var(--accent)">
-          <div class="metric-label">Services Profit</div>
-          <div class="metric-value" style="color:var(--accent)">£{_svc_profit_term:.0f}</div>
-          <div class="metric-sub">£{_svc_margin_pm:.2f}/mo × {lease_term}mo  ·  sell £{_svc_sell_pm:.2f} cost £{_svc_cost_pm:.2f}</div>
-        </div>''', unsafe_allow_html=True)
-    with pb3:
-        st.markdown(f'''<div class="metric-card" style="border-left:4px solid var(--good);background:rgba(52,211,153,.08)">
-          <div class="metric-label" style="color:var(--good)">Total Gross Profit</div>
-          <div class="metric-value" style="color:var(--good)">£{_total_gp:.0f}</div>
-          <div class="metric-sub">Lease £{_adjusted_gp:.0f} + Services £{_svc_profit_term:.0f}{(" + Printers £" + format(printer_lease_profit, ".0f")) if printer_rows else ""}</div>
-        </div>''', unsafe_allow_html=True)
-    if termination_cost > 0:
-        st.markdown(
-            f'<div class="info-box">🔒 Termination / Buyout: <strong>£{termination_cost:.2f}</strong> - '
-            f'{"spread at £" + str(round(termination_cost/lease_term,2)) + "/mo over " + LEASE_TERM_LABELS[lease_term] if is_spread else "included in upfront cost"}</div>',
-            unsafe_allow_html=True
-        )
-    if pat_warn:
-        st.markdown(f'<div class="warning-box">{pat_warn}</div>', unsafe_allow_html=True)
-    if override_bb_sell > 0:
-        st.markdown(f'<div class="info-box">🔐 BB Override by: {override_initials or "?"} | Customer: {override_customer or "?"}</div>', unsafe_allow_html=True)
+        with fi3:
+            st.markdown(f'''<div class="metric-card">
+              <div class="metric-label">Sub Total (SRRP basis)</div>
+              <div class="metric-value" style="font-size:1.3rem">£{pl_data["sub_total"]:.0f}</div>
+              <div class="metric-sub">SRRP £{pl_data["hw_srrp"]:.0f} + COS £{pl_data["cos_full"]:.0f}</div>
+            </div>''', unsafe_allow_html=True)
+        with fi4:
+            st.markdown(f'''<div class="metric-card">
+              <div class="metric-label">Commission ({commission_units:.2f} units)</div>
+              <div class="metric-value" style="font-size:1.3rem;color:var(--accent)">£{commission:.0f}</div>
+              <div class="metric-sub">£{commission_per_unit:.0f}/unit · £{commission_unit_size:.0f} GP = 1 unit</div>
+            </div>''', unsafe_allow_html=True)
+        st.markdown("---")
+        # Row 2 - Profit breakdown cards
+        _svc_cost_pm    = (svc["bb_cost"] + total_voice_channels * C.get("vc_cost_per_seat",2.95) + sw_cost_total
+                           + svc.get("mobile_cost",0.0) + _cs_svc_cost + _sec_svc_cost + _it_svc_cost)
+        _svc_sell_pm    = svc["total_sell"]
+        _svc_margin_pm  = _svc_sell_pm - _svc_cost_pm
+        _svc_profit_term = round(_svc_margin_pm * lease_term, 2)
+        _total_gp        = round(_adjusted_gp + _svc_profit_term + printer_lease_profit, 2)
+        _lp_is_target    = (st.session_state.get("c_desired_rental", 0) or 0) > 0 and abs(_desired_rental - base_rental) > 0.01
+        # Lease value + maximum termination
+        lv1, lv2 = st.columns(2)
+        with lv1:
+            st.markdown(f'''<div class="metric-card" style="border-left:4px solid var(--accent)">
+              <div class="metric-label">Lease Value</div>
+              <div class="metric-value">{"£" + format(lease_value, ",.0f") if is_lease else "n/a"}</div>
+              <div class="metric-sub">{("What the funder pays for the £" + format(_lv_rental, ",.2f") + "/mo rental in this deal (÷ " + format(true_rate, ".2f") + " rate × 1,000)" if _target_active else "What the funder pays for £" + format(_lv_rental, ",.2f") + "/mo value rental (÷ " + format(true_rate, ".2f") + " rate × 1,000), before any buyout") if is_lease else ("In-house system rental - no finance lease" if is_inhouse else "Upfront purchase - no lease")}</div>{('<div class="metric-sub" style="margin-top:.35rem;color:var(--accent-2)!important">This deal: £' + format(_desired_rental, ",.2f") + "/mo incl. buyout, funder pays £" + format(_desired_rental / true_rate * 1000.0 if true_rate > 0 else 0, ",.0f") + "</div>") if (is_spread and not _target_active and abs(_desired_rental - _lv_rental) > 0.01) else ""}{('<div class="metric-sub" style="margin-top:.35rem">Equipment only (before buyout cover): £' + format(_lv_equipment_only / true_rate * 1000.0 if true_rate > 0 else 0, ",.0f") + " funder pays</div>") if (is_lease and _target_active and abs(_lv_rental - _lv_equipment_only) > 0.01) else ""}
+            </div>''', unsafe_allow_html=True)
+        with lv2:
+            _over = termination_over
+            st.markdown(f'''<div class="metric-card" style="border-left:4px solid {"var(--warn)" if _over else "var(--good)"}">
+              <div class="metric-label">Max Termination ({MAX_TERMINATION_PCT:.0f}% of lease value)</div>
+              <div class="metric-value" style="color:{"var(--warn)" if _over else "var(--good)"}!important">{"£" + format(max_termination, ",.0f") if is_lease else "n/a"}</div>
+              <div class="metric-sub">{("Buyout £" + format(termination_cost, ",.0f") + (" - " + format(termination_over_pct, ".0f") + "% (£" + format(termination_cost - max_termination, ",.0f") + ") over the maximum" if _over else " - within the maximum")) if (is_spread and termination_cost > 0) else ("No buyout. At the maximum, lease profit would be £" + format(_gp_before_buyout - max_termination, ",.0f") if is_spread else "No buyout on this deal")}</div>{("<div class='metric-sub' style='color:var(--warn)!important;margin-top:.3rem'>Safe buyout at this rental: £" + format(safe_buyout, ",.0f") + "</div>") if safe_buyout_limited else ""}{("<div class='metric-sub' style='color:var(--warn)!important;margin-top:.3rem'>Target rental £" + format(rental_short_of_buyout, ",.2f") + "/mo short of covering the buyout</div>") if rental_short_of_buyout > 0 else ""}
+            </div>''', unsafe_allow_html=True)
+        if printer_rows:
+            pr1, pr2 = st.columns(2)
+            with pr1:
+                st.markdown(f'''<div class="metric-card" style="border-left:4px solid var(--accent)">
+                  <div class="metric-label">Printer Lease Profit</div>
+                  <div class="metric-value">£{printer_lease_profit:,.0f}</div>
+                  <div class="metric-sub">Funder pays £{printer_funder:,.0f} for £{printer_monthly:.2f}/mo over {printer_term} months, less costs £{printer_cost_total:,.0f} · {printer_lease_profit / 4000:.2f} units</div>
+                </div>''', unsafe_allow_html=True)
+            with pr2:
+                st.markdown(f'''<div class="metric-card" style="border-left:4px solid var(--accent)">
+                  <div class="metric-label">Print Margin (estimated)</div>
+                  <div class="metric-value">£{printer_print_margin_mo:,.2f}/mo</div>
+                  <div class="metric-sub">Device uplift {PRN_UPLIFT:.0f}% · print uplift {PRN_CPC_UPLIFT:.0f}%</div>
+                </div>''', unsafe_allow_html=True)
+        # Finance viability - admin only (consultants no longer see this)
+        if fin_band != "none":
+            _fb = {"good":    ("Likely to pass",     "var(--good)"),
+                   "stretch": ("Possible (stretch)", "var(--warn)"),
+                   "unlikely":("Unlikely to pass",   "var(--bad, #F87171)")}[fin_band]
+            st.markdown(f'''<div class="metric-card" style="border-left:4px solid {_fb[1]}">
+              <div class="metric-label">Finance Viability</div>
+              <div class="metric-value" style="color:{_fb[1]}">{_fb[0]}</div>
+              <div class="metric-sub">Funded £{fin_funded:,.0f} across {fin_handsets} handset(s) = £{fin_per_handset:,.0f} per handset
+              (comfortable up to £{FIN_OK_PER_HANDSET:,.0f}, stretch up to £{FIN_MAX_PER_HANDSET:,.0f})</div>
+            </div>''', unsafe_allow_html=True)
+        pb1, pb2, pb3   = st.columns(3)
+        with pb1:
+            st.markdown(f'''<div class="metric-card" style="border-left:4px solid var(--border-strong)">
+              <div class="metric-label">Lease Profit</div>
+              <div class="metric-value" style="color:var(--text)">£{_adjusted_gp:.0f}</div>
+              <div class="metric-sub">At £{_desired_rental:,.2f}/mo {"target" if _lp_is_target else "calculated"} rental: {("£" + format(_gp_before_buyout, ",.0f") + " before buyout, less £" + format(termination_cost, ",.0f") + " buyout") if termination_cost > 0 else ("funder pays £" + format(_profit_disc_turnover, ",.0f") + " less costs £" + format(pl_data["cos_full"], ",.0f"))}</div>
+            </div>''', unsafe_allow_html=True)
+        with pb2:
+            st.markdown(f'''<div class="metric-card" style="border-left:4px solid var(--accent)">
+              <div class="metric-label">Services Profit</div>
+              <div class="metric-value" style="color:var(--accent)">£{_svc_profit_term:.0f}</div>
+              <div class="metric-sub">£{_svc_margin_pm:.2f}/mo × {lease_term}mo  ·  sell £{_svc_sell_pm:.2f} cost £{_svc_cost_pm:.2f}</div>
+            </div>''', unsafe_allow_html=True)
+        with pb3:
+            st.markdown(f'''<div class="metric-card" style="border-left:4px solid var(--good);background:rgba(52,211,153,.08)">
+              <div class="metric-label" style="color:var(--good)">Total Gross Profit</div>
+              <div class="metric-value" style="color:var(--good)">£{_total_gp:.0f}</div>
+              <div class="metric-sub">Lease £{_adjusted_gp:.0f} + Services £{_svc_profit_term:.0f}{(" + Printers £" + format(printer_lease_profit, ".0f")) if printer_rows else ""}</div>
+            </div>''', unsafe_allow_html=True)
+        if termination_cost > 0:
+            st.markdown(
+                f'<div class="info-box">🔒 Termination / Buyout: <strong>£{termination_cost:.2f}</strong> - '
+                f'{"spread at £" + str(round(termination_cost/lease_term,2)) + "/mo over " + LEASE_TERM_LABELS[lease_term] if is_spread else "included in upfront cost"}</div>',
+                unsafe_allow_html=True
+            )
+        if pat_warn:
+            st.markdown(f'<div class="warning-box">{pat_warn}</div>', unsafe_allow_html=True)
+        if override_bb_sell > 0:
+            st.markdown(f'<div class="info-box">🔐 BB Override by: {override_initials or "?"} | Customer: {override_customer or "?"}</div>', unsafe_allow_html=True)
 
 
 # ─── END OF RUN: hero, live summary, sign out ───────────────────────────────
