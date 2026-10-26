@@ -7171,6 +7171,16 @@ with tab6:
                 type="primary",
                 key="dl_signed",
             )
+            st.download_button(
+                "💾 Save the quote file (.json) - keep it with the signed pack",
+                data=json.dumps(quote_snapshot(), indent=2, default=str),
+                file_name=f"SYComms_{safe}_QUOTE_{date.today()}.json",
+                mime="application/json",
+                use_container_width=True,
+                key="dl_signed_quote",
+                help="Lets anyone reopen this exact deal later (Load previous quote) - for example to correct the company branding and re-issue the paperwork.",
+            )
+            st.caption("Download this at the same time as the signed pack and store them together.")
         else:
             st.info("Tick Step 1 complete, then add the signature and name on the left to enable the signed download."
                     if not _cis_done else "Add signature and name on the left to enable the signed download.")
