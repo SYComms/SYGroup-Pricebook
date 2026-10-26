@@ -8173,13 +8173,14 @@ with st.sidebar:
     _cu = st.session_state.get("current_user")
     if _cu:
         st.caption(f"Signed in as {_cu['name'] or _cu['email']}" + (" (admin)" if _cu["role"] == "admin" else ""))
-        if _cu["role"] == "admin":
-            _bn = list(BRAND_CONFIGS.keys())
-            _nb = st.selectbox("Company", _bn, index=_bn.index(st.session_state.get("selected_brand", "SY Comms")),
-                               key="admin_brand_switch")
-            if _nb != st.session_state.get("selected_brand"):
-                st.session_state.selected_brand = _nb
-                st.rerun()
+    # Anyone can sell on behalf of another company: pick it, then press Apply. (Each login still starts on its own company.)
+    _bn = list(BRAND_CONFIGS.keys())
+    _cur_b = st.session_state.get("selected_brand", "SY Comms")
+    _pick = st.selectbox("Company branding", _bn, index=_bn.index(_cur_b) if _cur_b in _bn else 0, key="brand_switch_pick")
+    if st.button("Apply branding", key="btn_apply_brand", disabled=(_pick == _cur_b), **FULL_WIDTH):
+        st.session_state.selected_brand = _pick
+        st.rerun()
+    st.markdown("<div style='height:1.2rem'></div>", unsafe_allow_html=True)
     if st.button("Log out", key="btn_logout", **FULL_WIDTH):
         for _k in ("app_authenticated", "admin_unlocked", "consultant_unlocked"):
             st.session_state[_k] = False
