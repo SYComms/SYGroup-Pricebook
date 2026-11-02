@@ -2212,13 +2212,39 @@ def _ac_brand(name):
 def _ac_srrp(it):
     return round(float(it.get("rrp") or 0) * float(AC_COST["srrp_mult"]), 2)
 
+_AC_IMG_DIR = Path(__file__).parent / "product_images"
+
+@st.cache_data(show_spinner=False)
+def _ac_read_b64(path, mtime):
+    return base64.b64encode(Path(path).read_bytes()).decode()
+
+def _ac_file_image(stem):
+    """A picture dropped into the product_images folder, e.g. samsung_wall.jpg or logo_samsung.png (capitals and jpg/png/webp don't matter)."""
+    try:
+        want = stem.lower()
+        for f in sorted(_AC_IMG_DIR.iterdir()):
+            if f.is_file() and f.stem.lower() == want and f.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"):
+                return _ac_read_b64(str(f), f.stat().st_mtime)
+    except Exception:
+        pass
+    return ""
+
+def _ac_slug(b):
+    return re.sub(r"[^a-z0-9]+", "_", b.lower()).strip("_")
+
+def _ac_logo(brand):
+    return _ac_file_image("logo_" + _ac_slug(brand))
+
 def _ac_img(it):
-    """Base64 picture for a catalogue line: the Midea photos, otherwise a plain holding drawing."""
+    """Base64 picture for a catalogue line: a photo from the product_images folder, else the built-in Midea photo, else a plain drawing."""
     n, kind = it["name"].lower(), it.get("kind", "")
     if kind in ("wall", "ceiling", "ducted"):
+        own = _ac_file_image(f"{_ac_slug(_ac_brand(it['name']))}_{kind}")
+        if own:
+            return own
         return AC_IMG.get("photo_" + kind) if _ac_brand(it["name"]) == "Midea" else AC_IMG.get(kind)
     if kind == "lossnay":
-        return AC_IMG.get("photo_lossnay") or AC_IMG.get("other")
+        return _ac_file_image("air_exchange") or _ac_file_image("lossnay") or AC_IMG.get("photo_lossnay") or AC_IMG.get("other")
     for key, words in (("engineer", ("engineer",)), ("electrician", ("electrician",)), ("copper", ("copper",)), ("insulation", ("insulation",)),
                        ("pump", ("pump",)), ("hose", ("hose",)), ("drainpipe", ("drain pipe",)), ("cable", ("cable",)), ("bracket", ("bracket",)),
                        ("wifi", ("wifi", "wi-fi")), ("trunking", ("trunking",)), ("tray", ("tray",)), ("feet", ("feet", "stand"))):
@@ -2401,6 +2427,10 @@ def ac_render():
                         else:
                             brand = brands[0]
                         if brand:
+                            _lg = _ac_logo(brand)
+                            if _lg:
+                                st.markdown(f"<div style='display:inline-block;background:#fff;border-radius:8px;padding:.2rem .6rem;margin-bottom:.3rem'>"
+                                            f"<img src='data:image/{_ac_ext(_lg)};base64,{_lg}' style='height:24px;max-width:130px;object-fit:contain'></div>", unsafe_allow_html=True)
                             items = by_brand[brand]
                             labels = {it["name"]: _ac_variant(it, brand) for it in items}
                             names = list(labels)
