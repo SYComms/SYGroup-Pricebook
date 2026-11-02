@@ -3289,8 +3289,7 @@ with col_hw2:
 
 # ── Number porting: Letter of Authority ────────────────────────────────────
 with col_hw2:
-    _loa_open = bool(st.session_state.get("q_loa_on", True))
-    with st.expander("📞 Number porting - Letter of Authority", expanded=_loa_open):
+    with st.expander("📞 Number porting - Letter of Authority", expanded=False):
         st.caption("Ticked by default so it isn't forgotten. Untick it if we are not taking over any of the customer's existing "
                    "numbers. When ticked, a Letter of Authority is added to the pack, and can also be downloaded on its own "
                    "to send to the old provider.")
