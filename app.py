@@ -6262,6 +6262,7 @@ if is_lease and AC["listed"]:
     _ac_sell = AC["equip_sell"] + (AC["inst_sell"] if AC["inst_needed"] else 0.0)
     _hw_all = max(compute_hw_sell(apply_ov=False), _ac_sell, 0.01)
     AC_SHIRE_RENTAL = round(hw_monthly_spread * _ac_sell / _hw_all, 2)
+if is_lease:
     total_mo          = svc["total_sell"] + hw_monthly_spread
 
 total_mo = round(total_mo + printer_monthly + printer_print_est_mo, 2)
