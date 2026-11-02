@@ -2496,8 +2496,6 @@ def ac_render():
                             st.caption("Within range - no extra install days.")
                 if R["maint_annual"] > 0:
                     st.caption(f"On-site support: included for the first {int(AC_COST['free_support_years'])} year{'s' if int(AC_COST['free_support_years']) != 1 else ''}, then £{R['maint_annual']:,.2f} a year plus VAT.")
-                if st.session_state.get("admin_unlocked") or st.session_state.get("consultant_unlocked"):
-                    st.caption(f"Internal: equipment cost £{R['equip_cost']:,.2f} · installation cost £{R['inst_cost']:,.2f}")
                 st.button("Clear air conditioning", key="ac_clear_btn", on_click=_ac_clear_all_cb)
     return ac_compute()
 
@@ -3473,8 +3471,17 @@ def build_proposal_pdf(sign=None, cis=False):
 
     _phones = [(n, q) for n, q in list(desktop_quantities.items()) + list(cordless_quantities.items()) if q > 0]
     _n_handsets = sum(q for _, q in _phones)
+    # air-conditioning systems and extras chosen in the Air Conditioning dropdown (pictures included)
+    _ac_cards = [(it["name"], q) for it, q in AC["listed"] if it.get("group") in AC_SYSTEM_GROUPS or it.get("group") == "Extras"]
+    _ac_cards.sort(key=lambda t: 0 if any(g in next((i for i in AC_CAT if i["name"] == t[0]), {}).get("group", "") for g in AC_SYSTEM_GROUPS) else 1)
+    _n_ac = sum(q for it, q in AC["listed"] if it.get("group") in AC_SYSTEM_GROUPS)
+    _show_ac = _ac_cards[:3]
+    _phones_all = _phones
+    _phones = _show_ac + _phones_all[:max(0, 5 - len(_show_ac))]
+    _extra_cards = len(_ac_cards) - len(_show_ac) + max(0, len(_phones_all) - max(0, 5 - len(_show_ac)))
     section("02", "Your new system",
             (f"{_n_handsets} handset{'s' if _n_handsets != 1 else ''}  \u00b7  " if _n_handsets else "")
+            + (f"{_n_ac} air conditioning unit{'s' if _n_ac != 1 else ''}  \u00b7  " if _n_ac else "")
             + (f"{'system rental' if is_inhouse else 'hardware lease'} {gbp(hw_monthly_spread)}/mo over {term_lbl}" if is_spread
                else f"hardware {gbp(upfront)} one-off"))
     if _phones:
@@ -3504,15 +3511,15 @@ def build_proposal_pdf(sign=None, cis=False):
                     for kc in range(4):
                         p.rect(bx + 5.2 + kc * 2.8, by + 10.8 + kr * 2, 1.6, 1.1, "F")
             p.set_xy(cx_ + 1, cy_ + 26.5); p.set_font("Helvetica", "B", 6.4); p.set_text_color(*TEXT)
-            p.cell(cw_ - 2, 3.5, _ps(name.split("(")[0].strip()[:22]), align="C")
+            p.cell(cw_ - 2, 3.5, _ps(name.split("(")[0].replace("Wall Mounted", "Wall").replace("Ceiling Cassette", "Cassette").replace("Air conditioning installation", "Installation").strip()[:22]), align="C")
             chip_w = 9; p.set_fill_color(*ACC_SOFT)
             p.rect(cx_ + (cw_ - chip_w) / 2, cy_ + 31.2, chip_w, 4.4, "F", round_corners=True, corner_radius=2.2)
             p.set_xy(cx_ + (cw_ - chip_w) / 2, cy_ + 31.4); p.set_font("Helvetica", "B", 6.5); p.set_text_color(*ACC2)
             p.cell(chip_w, 4, f"x{qty}", align="C")
         p.set_y(cy_ + ch_ + 3)
-        if len(_phones) > 5:
+        if _extra_cards > 0:
             p.set_font("Helvetica", "", 7.5); p.set_text_color(*MUTED)
-            p.cell(0, 4, _ps(f"+ {len(_phones) - 5} more handset model(s) on your order form"),
+            p.cell(0, 4, _ps(f"+ {_extra_cards} more item(s) on your order form"),
                    new_x="LMARGIN", new_y="NEXT")
         p.ln(5)
 
