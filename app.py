@@ -6016,6 +6016,18 @@ def compute_pricebook_pl():
     hw_srrp    = _hw_sell * 1.5
     maintenance_annual = 0.2 * hw_rrp
     cos_ex     = maintenance_annual + 200.0 + compute_install_cost() + termination_cost + extra_costs_total + 400.0
+    # A blank quote (nothing selected at all) carries no costs - the fixed £200 / £400 / install only
+    # start to count once something is actually on the deal.
+    try:
+        _blank = (_hw_sell <= 0 and _hw_buy <= 0 and termination_cost <= 0 and extra_costs_total <= 0
+                  and not (globals().get("AC") or {}).get("listed")
+                  and float(svc.get("total_sell", 0) or 0) <= 0 and extra_bb_install_total() <= 0
+                  and not printer_rows and not (st.session_state.get("c_desired_rental") or 0) > 0)
+    except Exception:
+        _blank = False
+    if _blank:
+        maintenance_annual = 0.0
+        cos_ex = 0.0
     sub_total  = cos_ex + hw_srrp
     rental     = (sales_rate / 1000.0) * sub_total
     disc_turn  = (rental / true_rate) * 1000.0
