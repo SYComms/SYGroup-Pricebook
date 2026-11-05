@@ -5643,6 +5643,215 @@ def _embed_sig(pdf_obj, sig_bytes, x=15, w=65, h=20,
 
 
 
+# ─── CALL SCOPE PAPERWORK (own branding, price schedule, editable Terms & Conditions) ─────────────────────
+_CS_BRAND_DEFAULT = {
+    "trading": "Call Scope", "byline": "by SY Comms", "legal": "", "address": "", "email": "", "phone": "",
+    "website": "callscope.sycomms.cloud", "accent": "#7870E8", "navy": "#101938",
+    "tag": "Every conversation. More intelligence.", "logo_b64": "",
+}
+
+_CS_TERMS_DEFAULT = """## 1. ABOUT THESE TERMS
+These terms apply to the {BRAND} services listed on your Call Scope Service Order (the Services), which {PROVIDER} ("we", "us") provides to the customer named on the Order ("you"). They sit alongside your main agreement with us for telephony and connectivity services. If the two conflict about the Services, these terms apply to the Services. Nothing here changes your signed main agreement in any other respect.
+
+"Order" means the Call Scope services and prices shown in the order paperwork you sign with us. "Minimum Term" means the term shown on the Order, starting on the date the Services are first made available to you (the Start Date). "Charges" means the prices on the Order as they change under clause 11. "Customer Content" means call recordings, transcripts, text and other data that you or your users put into, or create using, the Services.
+
+## 2. THE SERVICES
+{BRAND} is a cloud-based call intelligence service. Depending on the modules on your Order it can transcribe, summarise and score calls, answer calls with an AI receptionist, connect to your CRM and portal, and report on call activity. We provide the Services with reasonable skill and care. We do not promise that they will be uninterrupted or error-free. We may carry out maintenance, updates and improvements, and will give notice of planned work that is likely to affect you where we reasonably can.
+
+## 3. YOUR ACCOUNT AND USERS
+The Services are for business use. You must give us accurate information, keep login details secure, and you are responsible for everything done under your accounts. Accounts and modules are for the users and modules on your Order and must not be shared between people to avoid paying for extra users. Tell us promptly if you think an account has been compromised. You may add users or modules at any time; they are charged at the prices then applying and run to the end of the Minimum Term.
+
+## 4. AI OUTPUT
+Parts of the Services use artificial intelligence, including language models and speech recognition supplied by third parties. AI output (transcripts, summaries, scores, classifications, suggestions and automated call handling) can contain mistakes, omissions or inappropriate content, and can differ from one run to the next. You must review AI output before relying on it. It is not legal, financial, HR, medical or other professional advice. Do not use output on its own to make decisions about a person (for example disciplinary, employment or credit decisions) without meaningful human review. We give no warranty that output is accurate, complete or fit for any particular purpose.
+
+## 5. RECORDING, CONSENT AND LAWFUL USE
+You are responsible for making sure that recording, transcribing and analysing calls is lawful. In the UK this includes the Investigatory Powers Act 2000, the Telecommunications (Lawful Business Practice) (Interception of Communications) Regulations 2000, the UK GDPR and the Data Protection Act 2018. You must have a lawful basis, tell callers and staff that calls are recorded and analysed (including by AI) and why, and keep your own privacy notices up to date. We do not decide what you record. If you use the Services for calls with people outside the UK, you are responsible for complying with local consent laws.
+
+## 6. DATA PROTECTION
+For personal data in Customer Content you are the controller and we are your processor. We will: (a) process it only on your documented instructions (these terms, the Order and your use of the Services are your instructions); (b) make sure anyone we allow to access it is bound by confidentiality; (c) keep appropriate technical and organisational security measures; (d) use sub-processors (such as hosting and AI providers) only under written terms giving the same level of protection, and give you a list on request and notice of significant changes, with a right to object; (e) help you respond to data subject requests and meet your security, impact assessment and breach obligations; (f) tell you without undue delay after becoming aware of a personal data breach affecting your data; (g) not transfer personal data outside the UK without lawful safeguards, such as an adequacy decision or approved contractual clauses; (h) provide the information reasonably needed to show compliance and allow reasonable audits on notice, no more than once a year unless a regulator requires otherwise; and (i) when the Services end, let you export your Customer Content for 30 days and then delete it, unless the law requires us to keep it. Further detail of the processing (subject matter, duration, types of data and data subjects) is in our data processing schedule, available from {EMAIL}.
+
+## 7. YOUR CONTENT AND OUR RIGHTS
+You own your Customer Content. You give us a limited licence to use it only as needed to provide, secure and support the Services to you. We will not sell it or use it to train our own AI models, and we require our AI providers to process it only to deliver the Services. We own or license the platform, software, prompts, scoring methods, designs and documentation, and you must not copy or reverse engineer them. We may use anonymised usage statistics that do not identify you or any individual to run and improve the Services.
+
+## 8. ACCEPTABLE USE
+You must not use the Services: unlawfully (including to record calls without a lawful basis); to upload malware or harmful or infringing content; to reverse engineer, scrape or extract source code, prompts or models; to resell, sublicense or give access to others without our written consent; for bulk, automated or excessive use beyond normal business use for your own calls, including training your own AI models on the output; or to get around limits, minute bundles or security. Minute bundles are for your own call volumes. We may suspend access to stop a breach of this clause and will tell you as soon as reasonably possible.
+
+## 9. THIRD PARTY SERVICES
+The Services connect to services we do not control, such as telephony platforms, CRMs, AI and speech providers and hosting. We are not responsible for outages, changes or behaviour of those services, but we will use reasonable efforts to restore affected integrations promptly.
+
+## 10. CHARGES AND PAYMENT
+All Charges exclude VAT. Monthly Charges are invoiced monthly in advance and are due within 14 days of the invoice date. A late payment fee of GBP 25 applies if an invoice is more than 7 days overdue, in line with your main agreement. One-off set-up charges are shown separately on the Order. Where a module includes a minutes bundle, usage above the bundle is charged at our standard per-minute rate then in force, which we will confirm on request. Unused minutes do not carry over.
+
+## 11. PRICES AND PRICE CHANGES
+The Charges for the Services are fixed for the first 12 months from the Start Date. {PROVIDER} sets its own prices for the Services, independently of the prices of any other products or services you buy from us or from any other company. After the first 12 months we may increase the Charges for the Services, including by reducing or removing any introductory discount, at our own discretion and on at least 30 days' written notice. Any increase we make under this clause is separate from, and may be in addition to, any annual price review of other services under your main agreement. If you add or remove users or modules, the Charges change accordingly.
+
+## 12. TERM, RENEWAL AND CANCELLATION
+The Services start on the Start Date and continue for the Minimum Term of {TERM}. At the end of the Minimum Term, and of each renewal, they renew automatically for 12 months unless either party gives at least 90 days' written notice to end them at the end of the then-current term. If you cancel during the Minimum Term (other than because of our material breach that we have not fixed), the Charges for the rest of the Minimum Term, at the Charges then applying, become payable.
+
+## 13. SUSPENSION AND TERMINATION
+We may suspend or end the Services if an invoice stays unpaid 7 days after we notify you, if you breach clause 5 or 8, or if you become insolvent. Either party may end the Services if the other commits a material breach and does not fix it within 30 days of notice. When the Services end, your access stops, unpaid Charges become due, and clause 6(i) applies to your data. Clauses that by their nature should continue (including 4, 5, 7 and 14 to 17) do so.
+
+## 14. WARRANTIES AND LIABILITY
+Except as set out here, the Services are provided "as is" and "as available" and all implied warranties are excluded as far as the law allows. Nothing limits liability for death or personal injury caused by negligence, for fraud, or for anything else that cannot be limited by law. Subject to that: we are not liable for loss of profit, business, goodwill or any indirect or consequential loss; we are not liable for loss caused by your reliance on AI output or by your unlawful recording or use of calls; and our total liability for all claims in a contract year is limited to the Charges you paid for the Services in the 12 months before the claim arose.
+
+## 15. INDEMNITY
+You will cover our reasonable losses and costs arising from third party claims that result from your breach of clause 5 or 8, your Customer Content, or your unlawful recording or use of calls. We will tell you promptly of any claim and let you help defend it.
+
+## 16. CONFIDENTIALITY
+Each party must protect the other's confidential information with reasonable care, use it only for this agreement, and not disclose it except to staff, advisers and sub-processors who need it or where the law requires. This lasts for 3 years after the agreement ends.
+
+## 17. CHANGES TO THESE TERMS
+We may update these terms where reasonably necessary, for example for changes in law, security, new features, or if our Call Scope business moves to a new company. We will give you at least 30 days' notice of any material change by email or in the Services. If a change is materially to your disadvantage you may end the Services without charge within that period; otherwise continued use means you accept it.
+
+## 18. GENERAL
+This is the whole agreement for the Services and replaces anything said before it. Neither party is liable for delay caused by events outside its reasonable control. If part of these terms cannot be enforced, the rest continues. Only the parties can enforce this agreement (Contracts (Rights of Third Parties) Act 1999). You may not transfer your rights without our written consent; we may transfer ours to another company in our group, or to a company that takes over the Call Scope business, on notice to you. Notices must be in writing to the contact details on the Order. English law applies and the courts of England and Wales have exclusive jurisdiction. Questions: {EMAIL}.
+"""
+
+
+def cs_brand():
+    b = dict(_CS_BRAND_DEFAULT)
+    b.update({k: v for k, v in (st.session_state.active_config.get("callscope_brand") or {}).items() if v})
+    b["legal"]   = b["legal"]   or _CO_LEGAL
+    b["address"] = b["address"] or _BRAND.get("address", "")
+    b["email"]   = b["email"]   or _BRAND.get("email", "")
+    b["phone"]   = b["phone"]   or _BRAND.get("phone", "")
+    return b
+
+
+def cs_logo_bytes(b=None):
+    b = b or cs_brand()
+    try:
+        if b.get("logo_b64"):
+            return base64.b64decode(b["logo_b64"])
+    except Exception:
+        pass
+    try:
+        return base64.b64decode(BUNDLED_IMAGES["__CS_LOGO__"][0])
+    except Exception:
+        return None
+
+
+def cs_terms_list():
+    """[(heading, [paragraphs])] - the Call Scope Terms & Conditions with the brand details filled in."""
+    b = cs_brand()
+    raw = st.session_state.active_config.get("callscope_terms_text") or _CS_TERMS_DEFAULT
+    subs = {"{PROVIDER}": b["legal"], "{BRAND}": b["trading"], "{EMAIL}": b["email"] or "the address on your Order",
+            "{TERM}": f"{int(lease_term)} months"}
+    out, cur = [], None
+    for line in raw.splitlines():
+        if line.startswith("## "):
+            cur = [line[3:].strip(), [[]]]
+            out.append(cur)
+        elif cur is not None:
+            if not line.strip():
+                if cur[1][-1]:
+                    cur[1].append([])
+            else:
+                cur[1][-1].append(line.strip())
+    res = []
+    for h, paras in out:
+        txt = [" ".join(p) for p in paras if p]
+        for k, v in subs.items():
+            h = h.replace(k, v)
+            txt = [t.replace(k, v) for t in txt]
+        res.append((h, txt))
+    return res
+
+
+def build_callscope_terms_pdf(sign=None):
+    """The Call Scope Terms & Conditions in Call Scope's branding, with the customer's agreement box - appended to the paperwork pack
+    when Call Scope services are on the deal. None if no Call Scope is selected."""
+    from fpdf import FPDF
+    if not cs_svc_rows:
+        return None
+    B = cs_brand()
+    G = st.session_state.get
+    sign = sign or {}
+
+    def hx(h, dflt):
+        try:
+            h = str(h).lstrip("#")
+            return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+        except Exception:
+            return dflt
+    VIO  = hx(B["accent"], (120, 112, 232))
+    NAVY = hx(B["navy"], (16, 25, 56))
+    INK, MUTE, TINT = (30, 32, 44), (110, 116, 135), (243, 242, 254)
+    logo = cs_logo_bytes(B)
+    T = lambda x: s(str(x or ""))
+
+    class _P(FPDF):
+        def header(self):
+            if logo:
+                try:
+                    self.image(io.BytesIO(logo), x=15, y=7, h=18)
+                except Exception:
+                    pass
+            self.set_xy(45, 11)
+            self.set_font("Helvetica", "B", 13); self.set_text_color(*NAVY)
+            self.cell(80, 6, T(B["trading"]), ln=True)
+            self.set_x(45)
+            self.set_font("Helvetica", "", 8); self.set_text_color(*MUTE)
+            self.cell(80, 4.5, T(f"{B['byline']}  |  {B['tag']}" if B["byline"] else B["tag"]), ln=True)
+            self.set_xy(120, 11)
+            self.set_font("Helvetica", "B", 8); self.set_text_color(*VIO)
+            self.cell(75, 5, "TERMS & CONDITIONS", align="R", ln=True)
+            self.set_fill_color(*VIO); self.rect(15, 28, 180, 0.9, "F")
+            self.set_y(33)
+
+        def footer(self):
+            self.set_y(-14)
+            self.set_font("Helvetica", "", 7); self.set_text_color(*MUTE)
+            self.cell(0, 4, T(f"{B['trading']}  |  {B['legal']}  |  All figures exclude VAT  |  Confidential"), align="C", ln=True)
+            self.cell(0, 4, f"Page {self.page_no()} of {{nb}}", align="C")
+
+    pdf = _P(orientation="P", unit="mm", format="A4")
+    pdf.alias_nb_pages()
+    pdf.set_margins(15, 15, 15)
+    pdf.set_auto_page_break(True, margin=18)
+    pdf.add_page()
+    pdf.set_font("Helvetica", "B", 15); pdf.set_text_color(*NAVY)
+    pdf.cell(0, 8, T(f"{B['trading']} Terms & Conditions"), ln=True)
+    pdf.set_font("Helvetica", "", 7.5); pdf.set_text_color(*MUTE)
+    pdf.cell(0, 4.5, T(f"Provided by {B['legal']}" + (f"  |  {B['address']}" if B["address"] else "")), ln=True)
+    for head, paras in cs_terms_list():
+        if pdf.get_y() > 262:
+            pdf.add_page()
+        pdf.ln(1.8)
+        pdf.set_fill_color(*TINT); pdf.set_text_color(*VIO); pdf.set_font("Helvetica", "B", 8)
+        pdf.cell(180, 5.2, T("  " + head), fill=True, ln=True)
+        pdf.set_text_color(*INK); pdf.set_font("Helvetica", "", 7.0)
+        for ptxt in paras:
+            pdf.set_x(15)
+            pdf.multi_cell(180, 3.45, T(ptxt), align="J")
+            pdf.ln(0.6)
+
+    # customer agreement (no consultant signature)
+    pdf.ln(3)
+    if pdf.get_y() > 232:
+        pdf.add_page()
+    pdf.set_fill_color(*NAVY); pdf.set_text_color(255, 255, 255); pdf.set_font("Helvetica", "B", 8.5)
+    pdf.cell(180, 7, T(f"  Agreement - I have read and agree to the {B['trading']} Terms & Conditions"), fill=True, ln=True)
+    pdf.ln(2)
+    nm = T(sign.get("name") or G("q_contact") or "")
+    parts = [x.strip() for x in nm.split(" - ", 1)]
+    half = 90
+    pdf.set_font("Helvetica", "", 8.5); pdf.set_text_color(*INK)
+    pdf.cell(half, 5.5, T(f"Name:     {parts[0] or '________________________'}"), ln=False)
+    pdf.cell(half, 5.5, T(f"Company:  {G('q_comp_name') or '________________________'}"), ln=True)
+    pdf.cell(half, 5.5, f"Date:     {date.today().strftime('%d/%m/%Y')}", ln=False)
+    pdf.cell(half, 5.5, T(f"Position / Title:  {parts[1] if len(parts) > 1 else '________________________'}"), ln=True)
+    pdf.cell(20, 5.5, "Signature:", ln=False)
+    sb = sign.get("sig_bytes") or sign.get("bytes")
+    if sb:
+        pdf.ln(6)
+        _embed_sig(pdf, sb, x=35, w=50, h=13, signer_name=nm, company=T(G("q_comp_name") or ""), timestamp=sign.get("ts", ""))
+        pdf.set_text_color(0, 0, 0)
+    else:
+        pdf.cell(70, 14, "________________________________", ln=True)
+    return bytes(pdf.output())
+
+
 def build_loa_pdf(sig_bytes=None, sig_ts=""):
     """Stand-alone Letter of Authority for the old provider - cut out of the pack so no pricing is ever shared."""
     core = _build_pdf_core(sig_bytes=sig_bytes, sig_timestamp=sig_ts)
@@ -5665,8 +5874,15 @@ def build_pdf(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='', sig
         from pypdf import PdfReader, PdfWriter
         prop = build_proposal_pdf(sign={"sig_bytes": None, "name": sig_name,      # always blank: this box is signed in Zoho Sign
                                         "company": sig_company, "timestamp": sig_timestamp})
+        _cs_terms = None
+        try:
+            _cs_terms = build_callscope_terms_pdf(sign={"sig_bytes": sig_bytes, "name": sig_name, "company": sig_company, "ts": sig_timestamp})
+        except Exception as _cs_err:
+            st.session_state["_pack_merge_error"] = ("Call Scope terms: " + str(_cs_err))[:200]
         w = PdfWriter()
-        for src in (prop, core):
+        for src in (prop, core, _cs_terms):
+            if not src:
+                continue
             for pg in PdfReader(io.BytesIO(src)).pages:
                 w.add_page(pg)
         out = io.BytesIO(); w.write(out)
@@ -8209,6 +8425,50 @@ if _show_admin:
                     st.session_state.active_config["constants"]["cs_min_buy"]  = _cs_min_b
                     st.session_state.active_config["constants"]["cs_min_sell"] = _cs_min_s
                     st.success("Call Scope minutes pricing saved"); st.rerun()
+
+                with st.expander("📜 Call Scope paperwork - branding & Terms and Conditions", expanded=False):
+                    st.caption("Used on the Call Scope Terms & Conditions added to the paperwork pack. When Call Scope becomes its own company, change the details here - "
+                               "no code change needed. Leave a box empty to use the default.")
+                    _cbr = st.session_state.active_config.get("callscope_brand", {}) or {}
+                    _b1, _b2 = st.columns(2)
+                    with _b1:
+                        _n_trading = st.text_input("Trading name", value=_cbr.get("trading", "Call Scope"), key="csb_trading")
+                        _n_legal   = st.text_input("Legal company name", value=_cbr.get("legal", ""), key="csb_legal",
+                                                   placeholder=f"Default: {_CO_LEGAL}")
+                        _n_addr    = st.text_input("Registered address", value=_cbr.get("address", ""), key="csb_addr")
+                        _n_web     = st.text_input("Website", value=_cbr.get("website", "callscope.sycomms.cloud"), key="csb_web")
+                    with _b2:
+                        _n_email   = st.text_input("Contact email", value=_cbr.get("email", ""), key="csb_email")
+                        _n_phone   = st.text_input("Contact phone", value=_cbr.get("phone", ""), key="csb_phone")
+                        _n_acc     = st.text_input("Brand colour (hex)", value=_cbr.get("accent", "#7870E8"), key="csb_acc")
+                        _n_byline  = st.text_input("Byline", value=_cbr.get("byline", "by SY Comms"), key="csb_byline",
+                                                   help="Shown under the name. Clear it once Call Scope stands on its own.")
+                    _logo_up = st.file_uploader("Call Scope logo (PNG or JPG, white or transparent background)", type=["png", "jpg", "jpeg"], key="csb_logo")
+                    if st.button("💾 Save Call Scope branding", key="csb_save"):
+                        _nb = {"trading": _n_trading.strip() or "Call Scope", "legal": _n_legal.strip(), "address": _n_addr.strip(),
+                               "website": _n_web.strip(), "email": _n_email.strip(), "phone": _n_phone.strip(),
+                               "accent": _n_acc.strip() or "#7870E8", "byline": _n_byline.strip(),
+                               "logo_b64": _cbr.get("logo_b64", "")}
+                        if _logo_up is not None:
+                            _nb["logo_b64"] = base64.b64encode(_logo_up.getvalue()).decode()
+                        st.session_state.active_config["callscope_brand"] = _nb
+                        st.success("Call Scope branding saved"); st.rerun()
+                    st.markdown("**Terms & Conditions**")
+                    st.caption("One clause per block: start each heading with ## and leave a blank line between paragraphs. "
+                               "You can use {BRAND}, {PROVIDER}, {EMAIL} and {TERM} - they are filled in automatically. "
+                               "This is a working draft built from your existing terms and common SaaS terms - have a solicitor review it before it is relied on.")
+                    _terms_now = st.session_state.active_config.get("callscope_terms_text") or _CS_TERMS_DEFAULT
+                    _terms_new = st.text_area("Call Scope Terms & Conditions", value=_terms_now, height=520, key="csb_terms",
+                                              label_visibility="collapsed")
+                    _tb1, _tb2 = st.columns(2)
+                    with _tb1:
+                        if st.button("💾 Save Terms & Conditions", key="csb_terms_save", type="primary"):
+                            st.session_state.active_config["callscope_terms_text"] = _terms_new
+                            st.success("Terms saved"); st.rerun()
+                    with _tb2:
+                        if st.button("↩️ Reset to the default draft", key="csb_terms_reset"):
+                            st.session_state.active_config.pop("callscope_terms_text", None)
+                            st.success("Reset to the default"); st.rerun()
 
                 st.markdown("---")
 
