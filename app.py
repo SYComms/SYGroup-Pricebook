@@ -314,6 +314,8 @@ def _load_users():
                 "role":  str(_v.get("role", "consultant") or "consultant").strip().lower(),
                 "brand": str(_v.get("brand", "") or ""),
                 "hash":  str(_v.get("hash", "") or ""),
+                # prepared_by_company = true: this person's name never appears on the paperwork - it says "Prepared by <company>"
+                "company_only": str(_v.get("prepared_by_company", False)).strip().lower() in ("true", "1", "yes"),
             }
         return out
     except Exception:
@@ -331,6 +333,14 @@ def _verify_pw(pw, stored):
 
 _DUMMY_HASH = "pbkdf2_sha256$200000$" + "00" * 16 + "$" + "00" * 32
 _USERS = _load_users()
+
+def _prepared_by():
+    """Who the paperwork says it was prepared by: the consultant's name - or, for users set to 'prepared_by_company',
+    the company currently selected (SY Comms / SW Comms / SY Plus), never their own name."""
+    _cu = st.session_state.get("current_user") or {}
+    if _cu.get("company_only"):
+        return str(BRAND_CONFIGS.get(st.session_state.get("selected_brand", "SY Comms"), {}).get("name", "") or "").strip()
+    return str(st.session_state.get("q_rep_name") or "").strip()
 
 def _admin_own_pw_ok(entered):
     """An admin-role user can unlock the Admin / Consultant areas with their own login password."""
@@ -371,11 +381,12 @@ if not st.session_state.app_authenticated:
                         if _ok:
                             st.session_state["_login_fails"] = 0
                             st.session_state.current_user = {"email": (_em or "").strip().lower(),
-                                                             "name": _u["name"], "role": _u["role"]}
+                                                             "name": _u["name"], "role": _u["role"],
+                                                             "company_only": bool(_u.get("company_only"))}
                             _dom = (_em or "").strip().lower().split("@")[-1]
                             _b = _u["brand"] if _u["brand"] in BRAND_CONFIGS else _DOMAIN_BRAND.get(_dom, "SY Comms")
                             st.session_state.selected_brand = _b
-                            if _u["name"]:
+                            if _u["name"] and not _u.get("company_only"):
                                 st.session_state["q_rep_name"] = _u["name"]       # who is producing the deals
                             if _u["role"] == "admin":
                                 st.session_state.admin_unlocked = True          # admins are already unlocked
@@ -1885,8 +1896,12 @@ with st.sidebar:
     num_employees   = st.number_input("No. of Employees", min_value=1, value=5, step=1, key="q_employees")
 
     st.markdown("### 📋 Deal Configuration")
-    st.text_input("Prepared by (consultant)", key="q_rep_name",
-                  help="Filled in from your login. Shown on the paperwork so we know who produced the deal.")
+    if (st.session_state.get("current_user") or {}).get("company_only"):
+        st.text_input("Prepared by", value=_prepared_by(), disabled=True, key="q_rep_name_locked",
+                      help="Your paperwork is always signed off with the company name, not a personal name.")
+    else:
+        st.text_input("Prepared by (consultant)", key="q_rep_name",
+                      help="Filled in from your login. Shown on the paperwork so we know who produced the deal.")
     # Deal type derived from payment model selection below
     # (set after payment_model widget is rendered)
     lease_term = st.selectbox("Service Agreement Term", list(LEASE_TERM_LABELS.keys()),
@@ -3537,7 +3552,7 @@ def build_proposal_pdf(sign=None, cis=False):
     p.add_page()
     y = topbar(date.today().strftime("%d %B %Y")) + 9
     eyebrow(f"Prepared for {comp_name or 'your business'}"
-            + (f"  \u00b7  by {(st.session_state.get('q_rep_name') or '').strip()}" if (st.session_state.get("q_rep_name") or "").strip() else ""), y)
+            + (f"  \u00b7  by {_prepared_by()}" if _prepared_by() else ""), y)
     p.set_xy(M, y + 6.5); p.set_font("Helvetica", "B", 24); p.set_text_color(*TEXT)
     _t1 = _ps("Contract information " if cis else f"Your {_CO} "); p.cell(p.get_string_width(_t1), 11, _t1)
     p.set_text_color(*ACC); p.cell(0, 11, "sheet" if cis else "proposal", new_x="LMARGIN", new_y="NEXT")
@@ -3943,7 +3958,7 @@ def _build_pdf_core(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='
         pdf_obj.set_y(19)
         pdf_obj.set_x(48)
         pdf_obj.cell(120, 6, s(subtitle), ln=False, align="L")
-        _rep_hdr = s((st.session_state.get("q_rep_name") or "").strip())
+        _rep_hdr = s(_prepared_by())
         if _rep_hdr:
             pdf_obj.set_font("Helvetica", "I", 8)
             pdf_obj.set_text_color(200, 205, 225)
@@ -3999,7 +4014,7 @@ def _build_pdf_core(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='
         pdf.set_text_color(0, 181, 163)
         pdf.set_y(136)
         pdf.cell(0, 7, s(f"Prepared for: {_comp}"), ln=True, align="C")
-        _rep_cov = s((st.session_state.get("q_rep_name") or "").strip())
+        _rep_cov = s(_prepared_by())
         if _rep_cov:
             pdf.set_font("Helvetica", "", 10)
             pdf.cell(0, 6, f"Prepared by: {_rep_cov}", ln=True, align="C")
@@ -4871,7 +4886,7 @@ def _build_pdf_core(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='
     # ── EXCEPTIONAL COMMERCIAL ARRANGEMENT (only when settlement > 0) ──
     if termination_cost > 0:
         # Read rep details from session state (defined in sidebar, not passed as params)
-        rep_name     = st.session_state.get("q_rep_name",     "")
+        rep_name     = _prepared_by()
         rep_position = st.session_state.get("q_rep_position", "")
         pdf.add_page()
         _add_header(pdf, "Exceptional Commercial Arrangement")
