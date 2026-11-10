@@ -334,6 +334,11 @@ def _verify_pw(pw, stored):
 _DUMMY_HASH = "pbkdf2_sha256$200000$" + "00" * 16 + "$" + "00" * 32
 _USERS = _load_users()
 
+def _maint_optout():
+    """Per-deal override (Admin - Per-Deal Overrides): the customer has opted out of maintenance on this deal."""
+    return bool(st.session_state.get("adm_maint_optout"))
+
+
 def _prepared_by():
     """Who the paperwork says it was prepared by: the consultant's name - or, for users set to 'prepared_by_company',
     the company currently selected (SY Comms / SW Comms / SY Plus), never their own name."""
@@ -732,7 +737,7 @@ _QUOTE_EXTRA = {
     "c_desired_rental", "c_svc_disc", "c_bb_disc", "c_cs_disc", "c_notes_val",                       # consultant: target rental, discount, special conditions
     "router_mode", "switch_mode", "add_wired_ports", "standalone_softphones_key",
     "cs_ai_portal_free",
-    "adm_bb_override", "adm_override_upfront", "adm_override_install", "adm_cp_json",  # manager per-deal overrides
+    "adm_bb_override", "adm_override_upfront", "adm_override_install", "adm_cp_json", "adm_maint_optout",  # manager per-deal overrides
     "adm_credits_months", "adm_credits_amount", "adm_cashback", "mgr_cust", "mgr_init",
 }
 _QUOTE_EXCLUDE = {
@@ -3754,8 +3759,9 @@ def build_proposal_pdf(sign=None, cis=False):
 
     # 04 Agreement at a glance
     section("04", "Agreement at a glance")
-    tiles = [("Agreement", term_lbl), ("Installation", install_type),
-             ("On-site warranty", "12 months inclusive"), ("Support", "Remote diagnostics")]
+    tiles = [("Agreement", term_lbl), ("Installation", install_type)] + (
+        [("Maintenance", "Not included"), ("Hardware", "Manufacturer warranty")] if _maint_optout()
+        else [("On-site warranty", "12 months inclusive"), ("Support", "Remote diagnostics")])
     tw_ = (CW - 3 * 4) / 4; ty_ = p.get_y()
     for i, (k, v) in enumerate(tiles):
         tx_ = M + i * (tw_ + 4)
@@ -3769,7 +3775,7 @@ def build_proposal_pdf(sign=None, cis=False):
     # 05 Why us
     section("05", f"Why businesses choose {_CO}")
     vals = [("One bill", "Hardware, licences, broadband and support in one monthly payment."),
-            ("Fully managed", "We handle installation, programming, warranty and helpdesk."),
+            ("Fully managed", "We handle installation and programming." if _maint_optout() else "We handle installation, programming, warranty and helpdesk."),
             ("Local engineers", "On-site support from engineers who know your area.")]
     vw = (CW - 2 * 4) / 3; vy = p.get_y()
     for i, (t, d) in enumerate(vals):
@@ -4682,7 +4688,7 @@ def _build_pdf_core(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='
     _qi_row("Programmed equipment for self installation", "Yes")
     _qi_row("Full equipment and software listed", "Yes")
     _qi_row("Project management", "Yes")
-    _qi_row("Includes 1 year on-site warranty", "Yes")
+    _qi_row("Includes 1 year on-site warranty", "No" if _maint_optout() else "Yes")
     pdf.ln(6)
 
     # ── Equipment Rental Terms ────────────────────────────────────────────────
@@ -4721,10 +4727,10 @@ def _build_pdf_core(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='
     pdf.multi_cell(pdf.epw, 4.5,
     f"I confirm that the above figures are representative of our current average expenditure "
     f"and I understand that I will be billed in line with {_CO} Ltd's current Terms and Conditions. "
-    + (f"I understand that I will be billed by {_CO} Ltd for the system rental, lines, calls, maintenance and broadband. "
+    + (f"I understand that I will be billed by {_CO} Ltd for the system rental, lines, calls{'' if _maint_optout() else ', maintenance'} and broadband. "
        if is_inhouse else
        f"I understand that I will be billed separately for the system rental by a 3rd party funder "
-       f"and lines, calls, maintenance and broadband by {_CO} Ltd under a separate agreement. ")
+       f"and lines, calls{'' if _maint_optout() else ', maintenance'} and broadband by {_CO} Ltd under a separate agreement. ")
     + f"*Fair usage policy applies, subject to terms and conditions.",
     align="J"
     )
@@ -4999,142 +5005,144 @@ def _build_pdf_core(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='
         _loa_pages(pdf, _add_header, sig_bytes=sig_bytes, sig_ts=sig_timestamp)
 
     # ── ON-SITE WARRANTY FORM ─────────────────────────────────────────────────
-    pdf.add_page()
-    _add_header(pdf, "On-Site Warranty Agreement")
+    if not _maint_optout():      # opted out of maintenance: no On-Site Warranty / maintenance page
+        pdf.add_page()
+        _add_header(pdf, "On-Site Warranty Agreement")
 
-    # Maintenance monthly charge from P&L: (hw_buy × 1.5 × 0.2) / 12
-    _maint_monthly = round(pl_data.get("maintenance_annual", 0) / 12, 2)
+        # Maintenance monthly charge from P&L: (hw_buy × 1.5 × 0.2) / 12
+        _maint_monthly = round(pl_data.get("maintenance_annual", 0) / 12, 2)
 
-    # Customer details
-    pdf.set_font("Helvetica","B",10)
-    pdf.set_fill_color(31,20,80); pdf.set_text_color(255,255,255)
-    pdf.cell(0,6,"  Customer Details",fill=True,ln=True)
-    pdf.set_text_color(0,0,0)
-    pdf.set_font("Helvetica","",9)
-    pdf.set_fill_color(248,249,255)
-    def _w_row(lbl, val):
-        pdf.cell(60,5,f"  {lbl}:",fill=True,ln=False)
-        pdf.cell(0,5,f"  {s(val)}",fill=True,ln=True,border="B")
-    _w_row("Customer Name",   _comp or "")
-    _w_row("Address",         _addr or "")
-    _w_row("Date",            date.today().strftime("%d/%m/%Y"))
-    pdf.ln(4)
-
-    # Equipment list
-    pdf.set_fill_color(31,20,80); pdf.set_text_color(255,255,255)
-    pdf.set_font("Helvetica","B",10)
-    pdf.cell(0,6,"  Equipment Covered",fill=True,ln=True)
-    pdf.set_text_color(0,0,0)
-    pdf.set_font("Helvetica","B",8)
-    pdf.set_fill_color(210,218,235)
-    pdf.cell(95,5,"  Item",fill=True,ln=False)
-    pdf.cell(45,5,"Qty",fill=True,ln=False,align="C")
-    pdf.cell(0,5,"Billing",fill=True,ln=True,align="C")
-    pdf.set_font("Helvetica","",8)
-    # Warranty covers PHYSICAL HARDWARE ONLY. Built from the hardware catalogues
-    # directly, so licences, software add-ons (e.g. Wallboard), broadband, mobiles,
-    # IT services and Call Scope can never appear here.
-    _NON_PHYSICAL = ("call scope", "call answer", "website widget", "my pa",
-                     "wallboard", "licence", "license", "setup (one-off)", "air conditioning installation")
-    def _is_physical(_n):
-        return not any(k in _n.lower() for k in _NON_PHYSICAL)
-    warranty_items = []
-    for _name, _qty in {**desktop_quantities, **cordless_quantities,
-                        **headset_quantities, **other_quantities}.items():
-        if _qty > 0 and _is_physical(_name) and _name not in {it["name"] for it, _q in AC["listed"]}:
-            warranty_items.append((_name, _qty))
-    if auto_switch and not _no_switch:
-        warranty_items.append((f"Switch: {rec_switch['name']}", 1))
-    if add_router:
-        if router_quantities:
-            for _rn, _rq in router_quantities.items():
-                warranty_items.append((_rn, _rq))
-        elif router_type not in ("None / Customer Supplied", ""):
-            warranty_items.append((router_type, 1))
-    if not warranty_items:
-        pdf.set_font("Helvetica","I",8)
-        pdf.cell(0,5,"  No physical hardware on this order.",ln=True)
-        pdf.set_font("Helvetica","",8)
-    for _name, _qty in warranty_items:
+        # Customer details
+        pdf.set_font("Helvetica","B",10)
+        pdf.set_fill_color(31,20,80); pdf.set_text_color(255,255,255)
+        pdf.cell(0,6,"  Customer Details",fill=True,ln=True)
+        pdf.set_text_color(0,0,0)
+        pdf.set_font("Helvetica","",9)
         pdf.set_fill_color(248,249,255)
-        pdf.cell(95,5,f"  {s(_name)}",fill=True,ln=False)
-        pdf.cell(45,5,str(_qty),fill=True,ln=False,align="C")
-        pdf.cell(0,5,s(_pdf_hw_billing),fill=True,ln=True,align="C")
-    pdf.ln(4)
+        def _w_row(lbl, val):
+            pdf.cell(60,5,f"  {lbl}:",fill=True,ln=False)
+            pdf.cell(0,5,f"  {s(val)}",fill=True,ln=True,border="B")
+        _w_row("Customer Name",   _comp or "")
+        _w_row("Address",         _addr or "")
+        _w_row("Date",            date.today().strftime("%d/%m/%Y"))
+        pdf.ln(4)
 
-    # Warranty terms
-    pdf.set_fill_color(31,20,80); pdf.set_text_color(255,255,255)
-    pdf.set_font("Helvetica","B",10)
-    pdf.cell(0,6,"  Warranty Terms",fill=True,ln=True)
-    pdf.set_text_color(0,0,0); pdf.set_font("Helvetica","",8.5)
-    pdf.set_x(pdf.l_margin)
-    pdf.multi_cell(pdf.epw,4,
-        f"{_CO_LEGAL} agrees to provide on-site warranty cover including remote diagnostics "
-        f"and programming of faults to the equipment listed above for an agreement term of "
-        f"{LEASE_TERM_LABELS[lease_term]}. "
-        f"Faulty equipment will be repaired or replaced. Additional equipment added will be "
-        f"charged and warranty premium will be added to this agreement.",align="J")
-    pdf.ln(2)
+        # Equipment list
+        pdf.set_fill_color(31,20,80); pdf.set_text_color(255,255,255)
+        pdf.set_font("Helvetica","B",10)
+        pdf.cell(0,6,"  Equipment Covered",fill=True,ln=True)
+        pdf.set_text_color(0,0,0)
+        pdf.set_font("Helvetica","B",8)
+        pdf.set_fill_color(210,218,235)
+        pdf.cell(95,5,"  Item",fill=True,ln=False)
+        pdf.cell(45,5,"Qty",fill=True,ln=False,align="C")
+        pdf.cell(0,5,"Billing",fill=True,ln=True,align="C")
+        pdf.set_font("Helvetica","",8)
+        # Warranty covers PHYSICAL HARDWARE ONLY. Built from the hardware catalogues
+        # directly, so licences, software add-ons (e.g. Wallboard), broadband, mobiles,
+        # IT services and Call Scope can never appear here.
+        _NON_PHYSICAL = ("call scope", "call answer", "website widget", "my pa",
+                         "wallboard", "licence", "license", "setup (one-off)", "air conditioning installation")
+        def _is_physical(_n):
+            return not any(k in _n.lower() for k in _NON_PHYSICAL)
+        warranty_items = []
+        for _name, _qty in {**desktop_quantities, **cordless_quantities,
+                            **headset_quantities, **other_quantities}.items():
+            if _qty > 0 and _is_physical(_name) and _name not in {it["name"] for it, _q in AC["listed"]}:
+                warranty_items.append((_name, _qty))
+        if auto_switch and not _no_switch:
+            warranty_items.append((f"Switch: {rec_switch['name']}", 1))
+        if add_router:
+            if router_quantities:
+                for _rn, _rq in router_quantities.items():
+                    warranty_items.append((_rn, _rq))
+            elif router_type not in ("None / Customer Supplied", ""):
+                warranty_items.append((router_type, 1))
+        if not warranty_items:
+            pdf.set_font("Helvetica","I",8)
+            pdf.cell(0,5,"  No physical hardware on this order.",ln=True)
+            pdf.set_font("Helvetica","",8)
+        for _name, _qty in warranty_items:
+            pdf.set_fill_color(248,249,255)
+            pdf.cell(95,5,f"  {s(_name)}",fill=True,ln=False)
+            pdf.cell(45,5,str(_qty),fill=True,ln=False,align="C")
+            pdf.cell(0,5,s(_pdf_hw_billing),fill=True,ln=True,align="C")
+        pdf.ln(4)
 
-    # Inclusive period + monthly charge highlight
-    pdf.set_fill_color(0,181,163); pdf.set_text_color(255,255,255)
-    pdf.set_font("Helvetica","B",9)
-    pdf.cell(0,7,f"  Inclusive Period: 12 months  |  Monthly charge after inclusive period: £{_maint_monthly:.2f} + VAT",
-             fill=True,ln=True,align="C")
-    pdf.set_text_color(0,0,0)
-    pdf.ln(2)
+        # Warranty terms
+        pdf.set_fill_color(31,20,80); pdf.set_text_color(255,255,255)
+        pdf.set_font("Helvetica","B",10)
+        pdf.cell(0,6,"  Warranty Terms",fill=True,ln=True)
+        pdf.set_text_color(0,0,0); pdf.set_font("Helvetica","",8.5)
+        pdf.set_x(pdf.l_margin)
+        pdf.multi_cell(pdf.epw,4,
+            f"{_CO_LEGAL} agrees to provide on-site warranty cover including remote diagnostics "
+            f"and programming of faults to the equipment listed above for an agreement term of "
+            f"{LEASE_TERM_LABELS[lease_term]}. "
+            f"Faulty equipment will be repaired or replaced. Additional equipment added will be "
+            f"charged and warranty premium will be added to this agreement.",align="J")
+        pdf.ln(2)
 
-    # Tier level
-    pdf.set_font("Helvetica","B",9)
-    pdf.cell(0,5,"Tier 1 Support Includes:",ln=True)
-    pdf.set_font("Helvetica","",8.5)
-    pdf.cell(0,5,"  [X]  Remote diagnostics and programming",ln=True)
-    pdf.cell(0,5,"  [X]  Engineer call-outs for repair or replacement of equipment",ln=True)
-    pdf.set_font("Helvetica","I",8)
-    pdf.set_text_color(120,120,120)
-    pdf.cell(0,5,"  Note: Excludes additional equipment added to the system in future.",ln=True)
-    pdf.set_text_color(0,0,0)
-    pdf.ln(3)
+        # Inclusive period + monthly charge highlight
+        pdf.set_fill_color(0,181,163); pdf.set_text_color(255,255,255)
+        pdf.set_font("Helvetica","B",9)
+        pdf.cell(0,7,f"  Inclusive Period: 12 months  |  Monthly charge after inclusive period: £{_maint_monthly:.2f} + VAT",
+                 fill=True,ln=True,align="C")
+        pdf.set_text_color(0,0,0)
+        pdf.ln(2)
 
-    # Declaration
-    pdf.set_fill_color(31,20,80); pdf.set_text_color(255,255,255)
-    pdf.set_font("Helvetica","B",10)
-    pdf.cell(0,6,"  Declaration",fill=True,ln=True)
-    pdf.set_text_color(0,0,0)
-    pdf.set_font("Helvetica","",8)
-    pdf.set_x(pdf.l_margin)
-    pdf.multi_cell(pdf.epw,4,
-        f"{_CO_LEGAL} agrees to provide remote and on-site maintenance cover for the equipment above "
-        "at the tier level set out above and the customer agrees to pay the monthly charge as set out "
-        "above for the Agreement Term, subject to the terms and conditions. As a duly authorised "
-        "representative of the customer, I confirm that I have read, understood and accept the terms "
-        "and conditions of this agreement.",align="J")
-    pdf.ln(4)
+        # Tier level
+        pdf.set_font("Helvetica","B",9)
+        pdf.cell(0,5,"Tier 1 Support Includes:",ln=True)
+        pdf.set_font("Helvetica","",8.5)
+        pdf.cell(0,5,"  [X]  Remote diagnostics and programming",ln=True)
+        pdf.cell(0,5,"  [X]  Engineer call-outs for repair or replacement of equipment",ln=True)
+        pdf.set_font("Helvetica","I",8)
+        pdf.set_text_color(120,120,120)
+        pdf.cell(0,5,"  Note: Excludes additional equipment added to the system in future.",ln=True)
+        pdf.set_text_color(0,0,0)
+        pdf.ln(3)
 
-    # Signature
-    pdf.set_font("Helvetica","B",9)
-    pdf.cell(0,5,"On Behalf of (The Customer):",ln=True)
-    pdf.set_font("Helvetica","",9)
-    pdf.cell(80,5,f"Name & Position: {s(_signer or '')}",ln=False)
-    pdf.cell(0,5,f"Date: {date.today().strftime('%d/%m/%Y')}",ln=True)
-    if sig_bytes:
-        try:
-            import tempfile as _tf2, os as _os2
-            with _tf2.NamedTemporaryFile(suffix=".png", delete=False) as _stf:
-                _stf.write(sig_bytes); _stf_path = _stf.name
+        # Declaration
+        pdf.set_fill_color(31,20,80); pdf.set_text_color(255,255,255)
+        pdf.set_font("Helvetica","B",10)
+        pdf.cell(0,6,"  Declaration",fill=True,ln=True)
+        pdf.set_text_color(0,0,0)
+        pdf.set_font("Helvetica","",8)
+        pdf.set_x(pdf.l_margin)
+        pdf.multi_cell(pdf.epw,4,
+            f"{_CO_LEGAL} agrees to provide remote and on-site maintenance cover for the equipment above "
+            "at the tier level set out above and the customer agrees to pay the monthly charge as set out "
+            "above for the Agreement Term, subject to the terms and conditions. As a duly authorised "
+            "representative of the customer, I confirm that I have read, understood and accept the terms "
+            "and conditions of this agreement.",align="J")
+        pdf.ln(4)
+
+        # Signature
+        pdf.set_font("Helvetica","B",9)
+        pdf.cell(0,5,"On Behalf of (The Customer):",ln=True)
+        pdf.set_font("Helvetica","",9)
+        pdf.cell(80,5,f"Name & Position: {s(_signer or '')}",ln=False)
+        pdf.cell(0,5,f"Date: {date.today().strftime('%d/%m/%Y')}",ln=True)
+        if sig_bytes:
             try:
-                pdf.image(_stf_path, x=pdf.l_margin, y=pdf.get_y(), h=14)
-            finally:
-                _os2.unlink(_stf_path)
-            pdf.ln(16)
-        except Exception:
+                import tempfile as _tf2, os as _os2
+                with _tf2.NamedTemporaryFile(suffix=".png", delete=False) as _stf:
+                    _stf.write(sig_bytes); _stf_path = _stf.name
+                try:
+                    pdf.image(_stf_path, x=pdf.l_margin, y=pdf.get_y(), h=14)
+                finally:
+                    _os2.unlink(_stf_path)
+                pdf.ln(16)
+            except Exception:
+                pdf.cell(0,14,"Signed: ________________",ln=True)
+        else:
             pdf.cell(0,14,"Signed: ________________",ln=True)
-    else:
-        pdf.cell(0,14,"Signed: ________________",ln=True)
-    pdf.ln(2)
-    pdf.set_font("Helvetica","I",7.5); pdf.set_text_color(80,80,80)
-    pdf.cell(0,4,"Annual price review applies after inclusive period. Subject to standard Terms & Conditions.",ln=True,align="C")
-    pdf.set_text_color(0,0,0)
+        pdf.ln(2)
+        pdf.set_font("Helvetica","I",7.5); pdf.set_text_color(80,80,80)
+        pdf.cell(0,4,"Annual price review applies after inclusive period. Subject to standard Terms & Conditions.",ln=True,align="C")
+        pdf.set_text_color(0,0,0)
+
 
     # ── CUSTOMER REQUIREMENT FORM ────────────────────────────────────────────
     pdf.add_page()
@@ -5220,10 +5228,14 @@ def _build_pdf_core(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='
              "price of the Equipment. We agree and accept that our obligation to pay the Rentals in full on their due "
              "dates without reduction, deduction, withholding, or offset whatsoever, shall apply notwithstanding any "
              "failure on the part of the Supplier or the Equipment.")
-    _crf_q(16,f"I fully understand that {_CO_LEGAL} will be and will at all times remain solely responsible for "
-             "providing any maintenance or service provision in respect of the Equipment in a separate agreement. "
-             "We are fully aware that if the Supplier stops providing maintenance for any reason we must fully "
-             "comply with all obligations under the Rental Agreement to keep the Equipment maintained.")
+    if _maint_optout():
+        _crf_q(16,f"I understand that I have chosen not to take a maintenance agreement with {_CO_LEGAL}. I remain responsible for "
+                 "keeping the Equipment maintained and for complying with all obligations under the Rental Agreement.")
+    else:
+        _crf_q(16,f"I fully understand that {_CO_LEGAL} will be and will at all times remain solely responsible for "
+                 "providing any maintenance or service provision in respect of the Equipment in a separate agreement. "
+                 "We are fully aware that if the Supplier stops providing maintenance for any reason we must fully "
+                 "comply with all obligations under the Rental Agreement to keep the Equipment maintained.")
     _crf_q(17,f"I understand that due to the data protection act, {_CO_LEGAL} have no authority to cancel any "
              "existing agreements with 3rd party suppliers. I am aware that (where applicable) it is my responsibility "
              "to cancel any existing agreements.")
@@ -5245,6 +5257,8 @@ def _build_pdf_core(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='
         ("Quotation - inc. tariff","[X]"),("Rental Document","[X]"),("Network Service Agreement","[X]"),
         ("On Site Maintenance Agreement","[X]"),
     ]
+    if _maint_optout():
+        _forms = [f for f in _forms if "Maintenance" not in f[0]]
     pdf.set_font("Helvetica","",8)
     _fc = st.columns if False else None  # PDF only - use cells
     for i in range(0,len(_forms),3):
@@ -6245,7 +6259,8 @@ def compute_pricebook_pl():
     _hw_sell   = compute_hw_sell()
     hw_rrp     = _hw_buy  * 1.5
     hw_srrp    = _hw_sell * 1.5
-    maintenance_annual = 0.2 * hw_rrp
+    maintenance_normal = 0.2 * hw_rrp
+    maintenance_annual = 0.0 if _maint_optout() else maintenance_normal      # opt-out: no maintenance provided, charged or costed
     cos_ex     = maintenance_annual + 200.0 + compute_install_cost() + termination_cost + extra_costs_total + 400.0
     # A blank quote (nothing selected at all) carries no costs - the fixed £200 / £400 / install only
     # start to count once something is actually on the deal.
@@ -6269,7 +6284,7 @@ def compute_pricebook_pl():
         "gross_profit": round(gp, 2), "comm_units": round(units, 3),
         "commission": round(units * 1000, 2), "rental": round(rental, 2),
         "disc_turnover": round(disc_turn, 2), "sub_total": round(sub_total, 2),
-        "hw_srrp": round(hw_srrp, 2), "maintenance_annual": round(maintenance_annual, 2),
+        "hw_srrp": round(hw_srrp, 2), "maintenance_annual": round(maintenance_annual, 2), "maintenance_normal": round(maintenance_normal, 2),
         "cos_full": round(cos_full, 2), "sales_rate": sales_rate, "true_rate": true_rate,
     }
 
@@ -6821,6 +6836,9 @@ with tab3:
         ] + (["✅ Letter of Authority (number porting)"] if (_loa_data()["on"] and _loa_data()["numbers"]) else []) + [
             "✅ Signature Blocks (all sections)",
         ]
+        if _maint_optout():
+            docs = [d for d in docs if "Maintenance" not in d]
+            docs.append("🚫 Maintenance opted out - no warranty / maintenance page")
         for d in docs:
             st.markdown(f"<div style='font-size:0.88rem;padding:0.25rem 0'>{d}</div>", unsafe_allow_html=True)
 
@@ -8101,6 +8119,18 @@ if _show_admin:
                     credits_months = st.number_input("Introductory Credit Period (months)", min_value=0, value=int(st.session_state.get("adm_credits_months",0)), step=1, key="adm_credits_months")
                     credits_amount = st.number_input("Monthly Credit Amount (£)", min_value=0.0, value=float(st.session_state.get("adm_credits_amount",0.0)), step=5.0, key="adm_credits_amount")
                     cashback_amount = st.number_input("Cashback / Settlement Fund (£)", min_value=0.0, value=float(st.session_state.get("adm_cashback",0.0)), step=50.0, key="adm_cashback")
+                st.markdown("---")
+                st.markdown("### 🛠️ Maintenance")
+                st.checkbox("🚫 Customer opts out of maintenance on this deal", key="adm_maint_optout",
+                            help="Removes the On-Site Warranty / maintenance agreement page, the monthly maintenance charge, and every "
+                                 "mention of maintenance and on-site warranty from the paperwork. The maintenance cost also comes out of the "
+                                 "deal's costings. Saved with the quote.")
+                _mn = float(pl_data.get("maintenance_normal", 0) or 0) / 12
+                if st.session_state.get("adm_maint_optout"):
+                    st.caption(f":orange[Maintenance is opted out on this deal - the normal £{_mn:,.2f}/mo (after the 12 inclusive months) "
+                               f"and its paperwork are removed.]")
+                else:
+                    st.caption(f"Maintenance is included as standard: 12 months inclusive, then £{_mn:,.2f}/mo + VAT.")
                 st.markdown("---")
                 st.markdown("### 💷 Customer prices - what the customer is charged on this deal")
                 st.caption("Type a price to override it; leave a box blank to keep the automatic price (0 means free). "
