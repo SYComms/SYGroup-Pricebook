@@ -2836,6 +2836,18 @@ def ac_shire_values(sign=None):
         when=(sign or {}).get("ts", "") and str((sign or {}).get("ts", ""))[:10] or "",
     )
 
+def _sig_transparent(png_bytes):
+    """The saved signature on a transparent background (white becomes see-through), so it never blanks out printed lines."""
+    from PIL import Image
+    im = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+    lum = im.convert("L")
+    alpha = lum.point(lambda v: max(0, min(255, int((255 - v) * 1.4))))
+    out = Image.new("RGBA", im.size, (15, 15, 40, 0))
+    out.putalpha(alpha)
+    b = io.BytesIO(); out.save(b, format="PNG")
+    return b.getvalue()
+
+
 def ac_build_shire(sign=None):
     """The Shire Leasing hire agreement, completed from the quote (and signed if `sign` has the signature). Returns PDF bytes."""
     from pypdf import PdfReader, PdfWriter
@@ -2923,8 +2935,9 @@ def ac_build_shire(sign=None):
             elif op[0] == "sig" and sign and sign.get("bytes"):
                 _, (x, top, w, h) = op
                 try:
-                    ov.set_fill_color(255, 255, 255); ov.rect(x - 1, top, w + 2, h, "F")      # covers the grey "Hirer signature" prompt
-                    ov.image(io.BytesIO(sign["bytes"]), x=x, y=top + 1, w=min(w, h * 3.1), h=h - 2)
+                    # a small white patch over just the grey "Hirer signature" prompt, so the printed lines of the form stay visible
+                    ov.set_fill_color(255, 255, 255); _po = {4: (3, 13)}.get(n, (12, 14)); ov.rect(x - 2, top + _po[0], 80, _po[1], "F")
+                    ov.image(io.BytesIO(_sig_transparent(sign["bytes"])), x=x, y=top + 1, w=min(w, (h - 5) * 3.1), h=h - 5, keep_aspect_ratio=True)
                 except Exception:
                     pass
     ovr = PdfReader(io.BytesIO(bytes(ov.output())))
