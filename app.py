@@ -5203,8 +5203,7 @@ def _build_pdf_core(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='
         )
         pdf.ln(3)
         pdf.set_font("Helvetica", "B", 9)
-        pdf.cell(90, 5, "Authorised Signature:", ln=False)
-        pdf.cell(0, 5, "Date:", ln=True)
+        pdf.cell(0, 5, "Authorised Signature:", ln=True)
         pdf.ln(2)
         _embed_sig(pdf, sig_bytes, signer_name=sig_name,
                    company=sig_company, timestamp=sig_timestamp)
@@ -7470,13 +7469,13 @@ def build_loa_pdf(sig_bytes=None, sig_ts=""):
     return out.getvalue()
 
 
-def build_pdf(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='', sig_ip='', **kw):
+def build_pdf(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='', sig_ip='', sign_proposal=False, **kw):
     """Full pack = signed 2-page Proposal Summary first, then the paperwork."""
     core = _build_pdf_core(sig_bytes=sig_bytes, sig_name=sig_name, sig_company=sig_company,
                            sig_timestamp=sig_timestamp, sig_ip=sig_ip, **kw)
     try:
         from pypdf import PdfReader, PdfWriter
-        prop = build_proposal_pdf(sign={"sig_bytes": None, "name": sig_name,      # always blank: this box is signed in Zoho Sign
+        prop = build_proposal_pdf(sign={"sig_bytes": (sig_bytes if sign_proposal else None), "name": sig_name,   # blank for the single pack (signed in Zoho Sign); signed in the combined pack
                                         "company": sig_company, "timestamp": sig_timestamp})
         w = PdfWriter()      # Call Scope has its own separate pack (build_callscope_pack) - nothing of it goes in here
         for src in (prop, core):
@@ -9869,19 +9868,27 @@ with tab6:
         if n_packs() >= 2 and not cs_crm_missing:
             st.divider()
             st.markdown("#### 📦 Combined pack - everything in one file")
-            st.caption("The telephony, Call Scope and SteadyTemp packs that are on this deal, joined end to end - each keeps its own agreement and signature box.")
+            st.caption("The telephony, Call Scope and SteadyTemp packs that are on this deal, joined end to end. The blank one is for Zoho Sign; once the signature and name are saved on the left, the signed version below puts them on every pack at once - just as the telephony signed pack does.")
             try:
                 st.download_button("📦 Combined pack - blank signature boxes (for Zoho Sign)",
                                    data=build_combined(_unsigned_bytes), file_name=f"Combined_Pack_{safe}_{date.today()}.pdf",
                                    mime="application/pdf", use_container_width=True, key="dl_comb_blank")
                 if sig_bytes and sig_name and (_cis_done or not _tele_any):
                     _sgx = {"sig_bytes": sig_bytes, "name": sig_name, "company": comp_name or "", "ts": _ts, "ip": _client_ip}
+                    _tele_signed = build_pdf(sig_bytes=sig_bytes, sig_name=sig_name, sig_company=comp_name or "", sig_timestamp=_ts, sig_ip=_client_ip,
+                                             sign_proposal=True, curr_total=current_total, curr_bb=current_bb, curr_system=current_system,
+                                             curr_calls=current_calls, curr_mobile=current_mobile) if _tele_any else None
                     st.download_button("✅ Combined pack - signed now",
-                                       data=build_combined(_signed_bytes if _tele_any else None, _sgx),
+                                       data=build_combined(_tele_signed, _sgx),
                                        file_name=f"Combined_Pack_{safe}_SIGNED_{date.today()}.pdf", mime="application/pdf",
                                        use_container_width=True, type="primary", key="dl_comb_signed")
                 else:
-                    st.caption("The signed combined pack unlocks once Step 1 is ticked (if telephony is on the deal) and the signature and name are added.")
+                    _why = []
+                    if _tele_any and not _cis_done: _why.append("tick 'Step 1 complete' above")
+                    if not sig_bytes: _why.append("save the signature")
+                    if not sig_name: _why.append("type the customer name")
+                    st.button("✅ Combined pack - signed now", disabled=True, use_container_width=True, key="dl_comb_signed_dis")
+                    st.caption("To unlock the signed combined pack: " + ", ".join(_why) + ".")
             except Exception as _cse:
                 st.error(f"Couldn't build the combined pack: {_cse}")
 
