@@ -8210,6 +8210,52 @@ with st.container(key="card-quote"):
         tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(_tab_names); tab7 = None
 
 # ── TAB 1: PROPOSAL SUMMARY ──────────────────────────────────────────────────
+def solution_totals():
+    """Monthly and one-off figures for every agreement on the deal (each its own company), excluding VAT."""
+    mo, one = [], []
+    if _tele_any:
+        mo.append((f"{_CO} - telephony and services", float(total_mo)))
+        if (not is_spread) and upfront and upfront > 0:
+            one.append((f"{_CO} - hardware (one-off)", float(upfront)))
+    if cs_active and not cs_crm_missing:
+        mo.append((cs_brand()["trading"], float(cs_quote["monthly_total"])))
+        if cs_quote["setup_mode"] != "waived":
+            _s = sum(x["total"] for x in cs_quote["setup"])
+            if _s > 0:
+                one.append((f"{cs_brand()['trading']} - set-up", float(_s)))
+    if ac_active:
+        if ac_quote["is_cash"]:
+            one.append((f"{st_company()['trading']} (one-off)", float(ac_quote["cash_price"])))
+        else:
+            mo.append((st_company()["trading"], float(ac_quote["rental"])))
+    return mo, one
+
+
+def _kv_row(label, val, colour="var(--text)"):
+    st.markdown(f"<div style='display:flex;justify-content:space-between;padding:0.3rem 0;border-bottom:1px solid var(--border);font-size:0.88rem'>"
+                f"<span style='color:var(--muted)'>{esc(label)}</span><span style='color:{colour};font-weight:500;text-align:right'>{esc(val)}</span></div>",
+                unsafe_allow_html=True)
+
+
+def _big_total(label, value, sub=""):
+    return (f'<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.1em;color:var(--muted);margin-bottom:0.4rem;padding-left:0.2rem">{label}</div>'
+            f'<div style="background:linear-gradient(160deg,var(--surface-3) 0%,var(--surface-2) 100%);border-radius:12px;padding:1.2rem 1.4rem;border:1px solid rgba(0,181,163,0.25)">'
+            f'<div style="font-size:2rem;font-weight:800;color:var(--accent)">{value}</div>'
+            f'<div style="font-size:0.8rem;color:rgba(255,255,255,0.45);margin-top:0.4rem">{sub}</div></div>')
+
+
+def _cs_lines_df():
+    q = cs_quote
+    rows = [{"Item": l["name"], "Qty": l["qty"], "Charge": f"£{l['total']:.2f}/mo"} for l in q["lines"]]
+    for s_ in q["setup"]:
+        rows.append({"Item": s_["name"] + " (one-off)", "Qty": s_["qty"], "Charge": "Waived" if q["setup_mode"] == "waived" else f"£{s_['total']:.2f}"})
+    return pd.DataFrame(rows)
+
+
+def _ac_items():
+    return [(it, q) for it, q in ac_quote["qty"] if it.get("group") not in ("Materials", "Labour")]
+
+
 with tab1:
     st.markdown('<div class="tab-content"></div>', unsafe_allow_html=True)
 
@@ -8219,6 +8265,8 @@ with tab1:
         st.markdown(f"📍 {install_address}")
     st.markdown("")
 
+    if n_packs() >= 2:
+        st.markdown("## 📞 Telephony")
     prop_col1, prop_col2 = st.columns(2)
 
     with prop_col1:
@@ -8363,6 +8411,64 @@ with tab1:
 
 
 
+    # ── Call Scope and air conditioning: each its own company, so each its own summary ──
+    if cs_active:
+        _cb = cs_brand(); _q = cs_quote
+        st.markdown("---")
+        st.markdown(f"## 🔮 {esc(_cb['trading'])}")
+        st.caption(f"Provided by {_cb['legal']} under its own agreement.")
+        if cs_crm_missing:
+            st.warning("Enter the customer's CRM in the Call Scope card - the Call Scope paperwork is held back until then.")
+        s1, s2 = st.columns(2)
+        with s1:
+            st.markdown("#### Services")
+            st.dataframe(_cs_lines_df(), use_container_width=True, hide_index=True)
+            if _q["discount"] > 0:
+                st.caption(f"Includes a {_q['discount']:g}% discount on the standard price" + (" (year 1, stepping back to standard)" if _q["style"] == "stepped" and _q["years"] > 1 else "") + ".")
+        with s2:
+            st.markdown("#### Commercial Summary")
+            st.markdown(f"<div style='font-size:0.72rem;color:var(--muted);margin-bottom:0.2rem'>Agreement term: <strong>{_q['term']} months</strong></div>", unsafe_allow_html=True)
+            _setup_t = 0.0 if _q["setup_mode"] == "waived" else sum(x["total"] for x in _q["setup"])
+            st.markdown(f'<div class="metric-card" style="text-align:left;margin-bottom:1rem"><div class="metric-label">Set-up (one-off)</div>'
+                        f'<div style="font-size:1.4rem;font-weight:700">{"Waived" if _q["setup_mode"] == "waived" else "£" + format(_setup_t, ",.2f")}</div></div>',
+                        unsafe_allow_html=True)
+            st.markdown(_big_total("TOTAL MONTHLY COMMITMENT", f"£{_q['monthly_total']:,.2f} + VAT", f"Billed monthly in advance · {_q['term']} months"), unsafe_allow_html=True)
+    if ac_active:
+        _co = st_company(); _q = ac_quote
+        st.markdown("---")
+        st.markdown(f"## ❄️ {esc(_co['trading'])}")
+        st.caption(f"Provided by {_co['legal']} under its own agreement.")
+        s1, s2 = st.columns(2)
+        with s1:
+            st.markdown("#### Equipment")
+            st.dataframe(pd.DataFrame([{"Description": it["name"], "Type": it.get("group", ""), "Qty": q} for it, q in _ac_items()]),
+                         use_container_width=True, hide_index=True)
+            st.caption(("Installation by our engineer" if _q["auto_install"] else "Installation as selected")
+                       + f" · {_q['est_days']:g} day(s) · {_q['engineers']} engineer(s) · electrician " + ("included" if _q["install_elec"] > 0 or _q["auto_install"] else "as selected") + ".")
+        with s2:
+            st.markdown("#### Commercial Summary")
+            st.markdown(f"<div style='font-size:0.72rem;color:var(--muted);margin-bottom:0.2rem'>Agreement: <strong>{'One-off purchase' if _q['is_cash'] else str(_q['term']) + ' months'}</strong></div>", unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-card" style="text-align:left;margin-bottom:1rem"><div class="metric-label">On-site support after year 1</div>'
+                        f'<div style="font-size:1.4rem;font-weight:700">£{_q["support"]:,.2f} / year</div>'
+                        f'<div style="font-size:0.78rem;color:var(--muted);margin-top:0.2rem">The first year is included</div></div>', unsafe_allow_html=True)
+            if _q["is_cash"]:
+                st.markdown(_big_total("AIR CONDITIONING PRICE", f"£{_q['cash_price']:,.2f} + VAT", "One-off, supplied and installed"), unsafe_allow_html=True)
+            else:
+                st.markdown(_big_total("TOTAL MONTHLY COMMITMENT", f"£{_q['rental']:,.2f} + VAT", f"Rental · {_q['term']} months"), unsafe_allow_html=True)
+    if n_packs() >= 2:
+        _mo, _one = solution_totals()
+        st.markdown("---")
+        st.markdown("## 🧾 Total solution")
+        t1, t2 = st.columns(2)
+        with t1:
+            for _l, _v in _mo:
+                _kv_row(_l, f"£{_v:,.2f}/mo")
+            st.markdown(_big_total("TOTAL MONTHLY", f"£{sum(v for _, v in _mo):,.2f} + VAT", "All agreements together"), unsafe_allow_html=True)
+        with t2:
+            for _l, _v in _one:
+                _kv_row(_l, f"£{_v:,.2f}")
+            st.markdown(_big_total("TOTAL ONE-OFF", f"£{sum(v for _, v in _one):,.2f} + VAT", "Hardware, set-up and cash sales"), unsafe_allow_html=True)
+
     # summary banner removed
 with tab2:
     st.markdown('<div class="tab-content"></div>', unsafe_allow_html=True)
@@ -8469,6 +8575,59 @@ with tab2:
             all_equip.append((f"Printer: {_r['name']}", _r["qty"]))
         for name, qty in all_equip:
             st.markdown(f"<div style='display:flex;justify-content:space-between;padding:0.2rem 0;font-size:0.85rem'><span style='color:var(--muted)'>{name}</span><span style='font-weight:600'>×{qty}</span></div>", unsafe_allow_html=True)
+
+    # ── Call Scope and air-conditioning order forms (each its own agreement) ──
+    if cs_active:
+        _cb = cs_brand(); _q = cs_quote
+        st.markdown("---")
+        st.markdown(f"## 🔮 {esc(_cb['trading'])} order")
+        o1, o2 = st.columns(2)
+        with o1:
+            st.markdown("#### Agreement")
+            _kv_row("Provider", _cb["legal"])
+            _kv_row("Customer", comp_name or "⚠️ Not provided", "#FBBF24" if not comp_name else "var(--text)")
+            _kv_row("Contract term", f"{_q['term']} months")
+            _kv_row("Billing", "Monthly in advance, by Direct Debit")
+            _crm = str(st.session_state.get("cs_crm_name", "") or "").strip()
+            if int(st.session_state.get("cs_AI Integration - CRM", 0) or 0) > 0:
+                _kv_row("Customer's CRM", _crm or "⚠️ Not provided", "#FBBF24" if not _crm else "var(--text)")
+            if _q["discount"] > 0:
+                _kv_row("Discount on standard price", f"{_q['discount']:g}%")
+            for _h, _tx in cs_notes:
+                _kv_row(_h, _tx)
+            _kv_row("Monthly total", f"£{_q['monthly_total']:,.2f} + VAT")
+            if cs_crm_missing:
+                st.warning("The Call Scope paperwork is held back until the customer's CRM is entered.")
+        with o2:
+            st.markdown("#### Services ordered")
+            st.dataframe(_cs_lines_df(), use_container_width=True, hide_index=True)
+    if ac_active:
+        _co = st_company(); _q = ac_quote
+        st.markdown("---")
+        st.markdown(f"## ❄️ {esc(_co['trading'])} order")
+        o1, o2 = st.columns(2)
+        with o1:
+            st.markdown("#### Agreement")
+            _kv_row("Provider", _co["legal"])
+            _kv_row("Customer", comp_name or "⚠️ Not provided", "#FBBF24" if not comp_name else "var(--text)")
+            _kv_row("Payment", "Cash sale" if _q["is_cash"] else f"Rental over {_q['term_label']}")
+            if _q["is_cash"]:
+                _kv_row("Price", f"£{_q['cash_price']:,.2f} + VAT (one-off)")
+            else:
+                _kv_row("Payment profile", _q["profile"])
+                _kv_row("Monthly rental", f"£{_q['rental']:,.2f} + VAT")
+                _kv_row("Finance", f"Shire Leasing hire agreement ({_co['funder']})")
+            _kv_row("On-site support", f"Year 1 included, then £{_q['support']:,.2f}/yr")
+            _kv_row("Installation", f"{_q['est_days']:g} day(s), {_q['engineers']} engineer(s)")
+            _sp = str(st.session_state.get("ac_special") or "").strip()
+            if _sp:
+                _kv_row("Special conditions", _sp)
+        with o2:
+            st.markdown("#### Equipment ordered")
+            st.dataframe(pd.DataFrame([{"Description": it["name"], "Qty": q} for it, q in _ac_items()]), use_container_width=True, hide_index=True)
+            _cur_ac = sum(float(st.session_state.get(k, 0) or 0) for k in ("ac_cur_running", "ac_cur_service", "ac_cur_leasing", "ac_cur_heating", "ac_cur_other"))
+            if _cur_ac > 0:
+                _kv_row("Customer's current heating / cooling costs", f"£{_cur_ac:,.2f}/mo")
 
 
 # ── TAB 3: DOWNLOAD ───────────────────────────────────────────────────────────
@@ -9019,6 +9178,38 @@ with tab4:
         st.markdown(f"""
         <div style="margin-top:1rem;padding:0.8rem 1rem;background:var(--surface-2);border-radius:8px;font-size:0.82rem;color:var(--muted);text-align:center">
           All figures exclude VAT.<br>{esc(_co['legal'])} provides air conditioning under its own agreement.
+        </div>
+        """, unsafe_allow_html=True)
+
+    # ── Total solution costs (everything together, each under its own agreement) ──
+    if n_packs() >= 2:
+        _mo, _one = solution_totals()
+        _mo_t, _one_t = sum(v for _, v in _mo), sum(v for _, v in _one)
+        st.markdown('<div class="cv-header" style="margin-top:2rem"><h2>Your Total Solution Costs</h2>'
+                    '<p>Everything above, together - each part provided under its own agreement</p></div>', unsafe_allow_html=True)
+        st.markdown('<div class="cv-section">🌐 Monthly</div>', unsafe_allow_html=True)
+        for _l, _v in _mo:
+            st.markdown(f"""
+            <div class="cv-price-row">
+              <span class="cv-price-label">{esc(_l)}</span>
+              <span class="cv-price-val">£{_v:,.2f}/mo</span>
+            </div>""", unsafe_allow_html=True)
+        if _one:
+            st.markdown('<div class="cv-section">💳 One-off</div>', unsafe_allow_html=True)
+            for _l, _v in _one:
+                st.markdown(f"""
+                <div class="cv-price-row">
+                  <span class="cv-price-label">{esc(_l)}</span>
+                  <span class="cv-price-val">£{_v:,.2f}</span>
+                </div>""", unsafe_allow_html=True)
+        st.markdown(f"""
+        <div style="margin-top:1rem;padding:1.2rem 1.6rem;background:var(--surface-2);border-radius:10px;border-left:4px solid var(--accent)">
+          <div style="font-size:0.8rem;color:var(--accent);font-weight:700;text-transform:uppercase;letter-spacing:.06em">Total solution - monthly</div>
+          <div style="font-size:2.1rem;font-weight:800;color:var(--text)">£{_mo_t:,.2f} <span style="font-size:0.9rem;color:var(--muted)">+ VAT</span></div>
+          {('<div style="margin-top:.6rem;font-size:0.8rem;color:var(--accent);font-weight:700;text-transform:uppercase;letter-spacing:.06em">Total one-off</div><div style="font-size:1.4rem;font-weight:800;color:var(--text)">£' + format(_one_t, ",.2f") + ' <span style="font-size:0.85rem;color:var(--muted)">+ VAT</span></div>') if _one else ''}
+        </div>
+        <div style="margin-top:1rem;padding:0.8rem 1rem;background:var(--surface-2);border-radius:8px;font-size:0.82rem;color:var(--muted);text-align:center">
+          All figures exclude VAT.
         </div>
         """, unsafe_allow_html=True)
 
