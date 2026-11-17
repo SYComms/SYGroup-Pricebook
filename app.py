@@ -952,6 +952,35 @@ def product_card_html(name, info, qty=0, show_qty=False, img_height=80):
     return (f'<div class="pe-prod{" on" if _sel > 0 else ""}">{img_html}'
             f'<div class="pe-prod-name">{esc(name)}</div>{_badge}</div>')
 
+def cs_card_html(label, img_name, qty=0, img_height=80):
+    """Call Scope card (same look as the product cards) - a photo, the name, and a x-badge when selected."""
+    b64, ext = get_product_image_b64(img_name)
+    if b64:
+        img_html = (f'<div class="pe-prod-stage" style="height:{img_height}px">'
+                    f'<img src="data:image/{ext};base64,{b64}" style="height:{img_height - 10}px" alt=""></div>')
+    else:
+        img_html = f'<div class="pe-prod-ph" style="height:{img_height}px">🔮</div>'
+    _badge = f'<div class="pe-prod-qty">x{int(qty)}</div>' if qty > 0 else ""
+    return (f'<div class="pe-prod{" on" if qty > 0 else ""}">{img_html}'
+            f'<div class="pe-prod-name">{esc(label)}</div>{_badge}</div>')
+
+
+_CS_SERVICES_DEFAULT = [
+    {"name": "AI Integration - Portal", "buy": 5.00,  "sell": 32.00},
+    {"name": "AI Integration - CRM",    "buy": 5.00,  "sell": 35.00},
+    {"name": "Manager Dashboard",        "buy": 5.00,  "sell": 59.00},
+    {"name": "Call Score",               "buy": 20.00, "sell": 45.00},
+    {"name": "AI Receptionist",          "buy": 69.00, "sell": 89.00},
+]
+CS_CARD_NAMES = ("AI Receptionist", "AI Integration - CRM")      # shown as cards under the DECT & Wireless Phones section
+CS_DISPLAY_NAMES = {"AI Integration - CRM": "AI CRM Integration"}   # the name the customer sees
+
+
+def cs_services_cfg():
+    if "call_scope_services" not in st.session_state.active_config:
+        st.session_state.active_config["call_scope_services"] = [dict(x) for x in _CS_SERVICES_DEFAULT]
+    return st.session_state.active_config["call_scope_services"]
+
 # ─── FULL PRODUCT CATALOGUE (from Excel NEW MECHANICS sheets) ────────────────
 
 # ─── PRODUCT CATALOGUES - loaded from config (editable via Admin Panel) ────────
@@ -1203,16 +1232,78 @@ def zoho_search_leads(text):
         out.append(r)
     return out
 
+def _lk(v, key="name"):
+    """A Zoho lookup field comes back as {'name':..., 'id':...} (or empty)."""
+    return str(v.get(key) or "") if isinstance(v, dict) else ""
+
+def zoho_search_deals(text):
+    """Deals whose details match the text -> list of dicts. Each shows the customer (the deal's Account) and the deal name."""
+    j = _zoho_get("Deals/search", {"word": text, "per_page": 10})
+    if j.get("code") and "data" not in j:
+        raise RuntimeError(f"Zoho: {j.get('message') or j.get('code')}")
+    out = []
+    for r in (j.get("data") or []):
+        r["_type"] = "Deal"
+        r["_deal_name"] = str(r.get("Deal_Name") or "")
+        r["_acct_id"] = _lk(r.get("Account_Name"), "id")
+        r["_stage"] = str(r.get("Stage") or "")
+        r["Account_Name"] = _lk(r.get("Account_Name")) or r["_deal_name"]
+        r["Billing_City"] = ""
+        out.append(r)
+    return out
+
+def zoho_load_deal(deal_id):
+    """A Deal -> (customer record, contacts). Uses the deal's own Account for the company details and contacts, with the
+    deal's contact first. A deal with no Account falls back to the deal's own details."""
+    j = _zoho_get(f"Deals/{deal_id}")
+    deal = (j.get("data") or [{}])[0]
+    acct_id = _lk(deal.get("Account_Name"), "id")
+    if acct_id:
+        acct, contacts = zoho_load_account(acct_id)
+    else:
+        acct = {"Account_Name": str(deal.get("Deal_Name") or "")}
+        contacts = []
+    cid = _lk(deal.get("Contact_Name"), "id")
+    if cid:
+        try:
+            c = ((_zoho_get(f"Contacts/{cid}").get("data")) or [{}])[0]
+            nm = f"{c.get('First_Name') or ''} {c.get('Last_Name') or ''}".strip() or _lk(deal.get("Contact_Name"))
+            dc = {"Full_Name": nm, "Email": c.get("Email") or "", "Phone": c.get("Phone") or c.get("Mobile") or "",
+                  "Title": c.get("Title") or "", "_src": "Deal"}
+            contacts = [dc] + [x for x in contacts if (x.get("Email") or x.get("Full_Name")) != (dc["Email"] or dc["Full_Name"])]
+        except Exception:
+            pass
+    acct = dict(acct)
+    acct["_deal"] = deal
+    acct["_acct_id"] = acct_id
+    return acct, contacts
+
+def zoho_deal_info(rec):
+    """(warning, context line) for a Deal - shown to the consultant, never printed on paperwork."""
+    d = rec.get("_deal") or {}
+    stage = str(d.get("Stage") or "")
+    warn = f"This deal is marked '{stage}' in Zoho - check before quoting." if re.search(r"lost|dead|cancel", stage, re.I) else ""
+    amt = d.get("Amount")
+    bits = [("Deal", str(d.get("Deal_Name") or "")), ("Stage", stage),
+            ("Amount", f"\u00a3{float(amt):,.2f}" if isinstance(amt, (int, float)) and amt else ""),
+            ("Closing", str(d.get("Closing_Date") or "")), ("Owner", _lk(d.get("Owner")))]
+    return warn, " | ".join(f"{k}: {v[:60]}" for k, v in bits if v)
+
 def zoho_search_all(text):
     """Accounts first, then Leads -> (results, note). A Leads problem never hides the Account results."""
     res, note = [], ""
     for r in zoho_search_accounts(text):
         r["_type"] = "Account"; res.append(r)
+    notes = []
     try:
         res += zoho_search_leads(text)
     except Exception as e:
-        note = f"Leads couldn't be searched ({e})"
-    return res, note
+        notes.append(f"Leads couldn't be searched ({e})")
+    try:
+        res += zoho_search_deals(text)
+    except Exception as e:
+        notes.append(f"Deals couldn't be searched ({e})")
+    return res, " ".join(notes)
 
 def zoho_load_lead(lead_id):
     """Full Lead record, reshaped so it fills the quote like an Account does. The lead itself is the contact."""
@@ -1719,12 +1810,12 @@ with st.sidebar:
         if not _zoho_configured():
             st.caption("Zoho isn't connected yet - please ask an admin (the connection is set up in the Admin panel).")
         if _zoho_configured():
-            _zq = st.text_input("Company name", key="_zoho_q", placeholder="Start of the company name (accounts and leads)")
+            _zq = st.text_input("Company name", key="_zoho_q", placeholder="Start of the company name (accounts, leads and deals)")
             if st.button("Search Zoho", key="_zoho_search", use_container_width=True) and _zq.strip():
                 try:
                     _zr_, _zn_ = zoho_search_all(_zq.strip())
                     st.session_state["_zoho_results"] = _zr_
-                    st.session_state["_zoho_msg"] = _zn_ if _zr_ else ("No matching accounts or leads found. " + _zn_).strip()
+                    st.session_state["_zoho_msg"] = _zn_ if _zr_ else ("No matching accounts, leads or deals found. " + _zn_).strip()
                 except Exception as _ze:
                     st.session_state["_zoho_results"] = []
                     _zm = str(_ze)
@@ -1736,19 +1827,29 @@ with st.sidebar:
             _zres = st.session_state.get("_zoho_results") or []
             if _zres:
                 _zi = st.selectbox("Matches", range(len(_zres)), key="_zoho_pick",
-                                   format_func=lambda i: f"{_zres[i].get('Account_Name', '?')} [{_zres[i].get('_type', 'Account')}]"
-                                                         + (f" - {_zres[i].get('Billing_City')}" if _zres[i].get("Billing_City") else ""))
+                                   format_func=lambda i: (f"{_zres[i].get('Account_Name', '?')} [Deal: {_zres[i].get('_deal_name') or '-'}"
+                                                          + (f" - {_zres[i].get('_stage')}" if _zres[i].get("_stage") else "") + "]")
+                                                         if _zres[i].get("_type") == "Deal" else
+                                                         (f"{_zres[i].get('Account_Name', '?')} [{_zres[i].get('_type', 'Account')}]"
+                                                          + (f" - {_zres[i].get('Billing_City')}" if _zres[i].get("Billing_City") else "")))
                 _za = _zres[_zi]
                 _cache = st.session_state.setdefault("_zoho_cache", {})
                 if _za["id"] not in _cache:
                     try:
-                        _cache[_za["id"]] = zoho_load_lead(_za["id"]) if _za.get("_type") == "Lead" else zoho_load_account(_za["id"])
+                        _cache[_za["id"]] = (zoho_load_lead(_za["id"]) if _za.get("_type") == "Lead"
+                                             else zoho_load_deal(_za["id"]) if _za.get("_type") == "Deal"
+                                             else zoho_load_account(_za["id"]))
                     except Exception as _ze:
                         _cache[_za["id"]] = (dict(_za), [])
                         st.caption(f"Couldn't load the full account: {_ze}")
                 _zrec, _zcons = _cache[_za["id"]]
                 _zc = None
                 _is_lead = _za.get("_type") == "Lead"
+                _is_deal = _za.get("_type") == "Deal"
+                if _is_deal:
+                    _dw, _di = zoho_deal_info(_zrec)
+                    if _dw: st.warning(_dw)
+                    if _di: st.caption("Deal - " + _di)
                 if _is_lead:
                     _lw, _li = zoho_lead_info(_zrec)
                     if _lw: st.warning(_lw)
@@ -1759,14 +1860,15 @@ with st.sidebar:
                                                                                    _zcons[i].get("Email") or ""] if x))
                     _zc = _zcons[_ci]
                 else:
-                    st.caption("No contact found on this lead." if _is_lead else "No contact found on this account.")
+                    st.caption("No contact found on this lead." if _is_lead else "No contact found on this deal or its account." if _is_deal else "No contact found on this account.")
                 _zcc = st.session_state.setdefault("_zoho_contracts", {})
-                if _za["id"] not in _zcc:
+                _zcid = (_za.get("_acct_id") or _zrec.get("_acct_id") or "") if _is_deal else _za["id"]     # a deal's contracts live on its Account
+                if _zcid not in _zcc:
                     try:
-                        _zcc[_za["id"]] = ([], "lead - no contracts") if _is_lead else zoho_load_contracts(_za["id"])
+                        _zcc[_zcid] = ([], "no contracts (lead or deal without an account)") if (_is_lead or not _zcid) else zoho_load_contracts(_zcid)
                     except Exception as _zce:
-                        _zcc[_za["id"]] = ([], f"error: {_zce}")
-                _zcl, _zcn = _zcc[_za["id"]]
+                        _zcc[_zcid] = ([], f"error: {_zce}")
+                _zcl, _zcn = _zcc[_zcid]
                 _zrent = 0.0; _zsettle = 0.0
                 if _zcl:
                     _live = [i for i, c in enumerate(_zcl) if _contract_is_live_monthly(c)]
@@ -1779,7 +1881,7 @@ with st.sidebar:
                     if _zsettle > 0:
                         st.caption(f"Estimated settlement: £{_zsettle:,.2f} = monthly amount x months left to the end date "
                                    "(only used if the account page has no Settlement figure - you can edit it afterwards)")
-                if st.button("Fill the quote from this lead" if _is_lead else "Fill the quote from this account", key="_zoho_fill_btn", type="primary", use_container_width=True):
+                if st.button("Fill the quote from this lead" if _is_lead else "Fill the quote from this deal" if _is_deal else "Fill the quote from this account", key="_zoho_fill_btn", type="primary", use_container_width=True):
                     st.session_state["_zoho_fill"] = _zoho_fill_values(_zrec, _zc, _zrent, _zsettle)
                     _zf = st.session_state["_zoho_fill"]
                     _zx = [n for k, n in (("q_employees", "system users"), ("q_curr_system", "monthly rental"), ("q_term_lease", "settlement")) if k in _zf]
@@ -2744,6 +2846,36 @@ with col_hw1:
             )
             if qty > 0:
                 cordless_quantities[name] = qty
+    # ── Call Scope: the two headline options as cards ──
+    # Call Scope minutes bundles are priced per minute (admin: Service Pricing) - buy 10p / sell 25p by default
+    _CS_MIN_BUY  = float(C.get("cs_min_buy", 0.10))
+    _CS_MIN_SELL = float(C.get("cs_min_sell", 0.25))
+    _CS_MIN_SIZES = (500, 1000, 1500)
+    _CS_MINS_COSTS = {f"{m} mins": round(m * _CS_MIN_SELL, 2) for m in _CS_MIN_SIZES}     # label shows minutes only - no prices on screen
+    _CS_MINS_BUY   = {f"{m} mins": round(m * _CS_MIN_BUY, 2) for m in _CS_MIN_SIZES}
+    _CS_MIN_OPTS = ["None"] + list(_CS_MINS_COSTS)
+    _cs_cards_cfg = {x["name"]: x for x in cs_services_cfg()}
+    st.markdown("**🔮 Call Scope**")
+    _cs_c1, _cs_c2 = st.columns(2)
+    with _cs_c1:
+        _rq = int(st.session_state.get("cs_AI Receptionist", 0) or 0)
+        st.markdown(cs_card_html("AI Receptionist", "Call Scope AI Receptionist", _rq), unsafe_allow_html=True)
+        _rec_price = float((_cs_cards_cfg.get("AI Receptionist") or {}).get("sell", 89.0))
+        st.number_input(f"AI Receptionist  £{_rec_price:.2f}/mo", min_value=0, value=0, step=1, key="cs_AI Receptionist")
+    with _cs_c2:
+        _crmq = int(st.session_state.get("cs_AI Integration - CRM", 0) or 0)
+        st.markdown(cs_card_html("AI CRM Integration", "Call Scope AI CRM Integration", _crmq), unsafe_allow_html=True)
+        st.number_input("AI CRM Integration", min_value=0, value=0, step=1, key="cs_AI Integration - CRM")
+        if int(st.session_state.get("cs_AI Integration - CRM", 0) or 0) > 0:
+            _mk = "cs_mins_AI Integration - CRM"
+            if st.session_state.get(_mk, "None") not in _CS_MIN_OPTS:       # old saved label -> match on the minutes
+                _old = str(st.session_state.get(_mk, "None")).split(" ")[0]
+                st.session_state[_mk] = next((o for o in _CS_MIN_OPTS if o.split(" ")[0] == _old), "None")
+            st.selectbox("Minutes for AI CRM Integration", _CS_MIN_OPTS, key=_mk)
+            st.text_input("Customer's CRM (required)", key="cs_crm_name", placeholder="e.g. Zoho, HubSpot, Salesforce",
+                          help="Which CRM the customer uses. It is needed before the Call Scope paperwork can be produced.")
+            if not str(st.session_state.get("cs_crm_name", "")).strip():
+                st.caption(":red[Enter the customer's CRM - the Call Scope paperwork is held back until it is filled in.]")
     # ── Air conditioning (minimised until opened) ──
     AC = ac_render()
 with col_hw2:
@@ -3034,31 +3166,14 @@ with col_hw2:
                             min_value=0, value=0, step=1, key=f"sec_{_sc['name']}")
 
 
-    # Call Scope minutes bundles are priced per minute (admin: Service Pricing) - buy 10p / sell 25p by default
-    _CS_MIN_BUY  = float(C.get("cs_min_buy", 0.10))
-    _CS_MIN_SELL = float(C.get("cs_min_sell", 0.25))
-    _CS_MIN_SIZES = (500, 1000, 1500)
-    _CS_MINS_COSTS = {f"{m} mins — £{m * _CS_MIN_SELL:,.0f}/mo": round(m * _CS_MIN_SELL, 2) for m in _CS_MIN_SIZES}
-    _CS_MINS_BUY   = {f"{m} mins — £{m * _CS_MIN_SELL:,.0f}/mo": round(m * _CS_MIN_BUY, 2) for m in _CS_MIN_SIZES}
-    _CS_MIN_OPTS = ["None"] + list(_CS_MINS_COSTS)
     with st.expander("🔮 Call Scope", expanded=False):
-        st.caption("Call Scope platform modules — monthly service charges unless noted")
-        if "call_scope_services" not in st.session_state.active_config:
-            st.session_state.active_config["call_scope_services"] = [
-                {"name": "AI Integration - Portal", "buy": 5.00,  "sell": 32.00},
-                {"name": "AI Integration - CRM",    "buy": 5.00,  "sell": 35.00},
-                {"name": "Manager Dashboard",        "buy": 5.00,  "sell": 59.00},
-                {"name": "Call Score",               "buy": 20.00, "sell": 45.00},
-                {"name": "AI Receptionist",          "buy": 69.00, "sell": 89.00},
-            ]
-        _cs_exp_cfg = st.session_state.active_config.get("call_scope_services", [])
+        st.caption("More Call Scope modules (monthly services). The AI Receptionist and AI CRM Integration are the cards on the left. "
+                   "Call Scope is quoted and signed as its own agreement, separate from the telephony.")
+        _cs_exp_cfg = [x for x in cs_services_cfg() if x["name"] not in CS_CARD_NAMES]
         _cse_col1, _cse_col2 = st.columns(2)
         with _cse_col1:
-            for _cs in _cs_exp_cfg[:2]:
-                st.number_input(
-                    f"{_cs['name']}  £{_cs['sell']:.2f}/mo",
-                    min_value=0, value=0, step=1, key=f"cs_{_cs['name']}"
-                )
+            for _cs in _cs_exp_cfg[:1]:
+                st.number_input(_cs["name"], min_value=0, value=0, step=1, key=f"cs_{_cs['name']}")
                 if "AI Integration" in _cs["name"] and st.session_state.get(f"cs_{_cs['name']}", 0) > 0:
                     _mk = f"cs_mins_{_cs['name']}"
                     if st.session_state.get(_mk, "None") not in _CS_MIN_OPTS:       # old saved label -> match on the minutes
@@ -3070,22 +3185,28 @@ with col_hw2:
                 {"name": "My PA 1000 mins", "sell": 199.0},
                 {"name": "My PA 2000 mins", "sell": 249.0},
             ])
-            _mypa_opts = ["None"] + [
-                f"{mp['name'].replace('My PA ','')} — £{mp['sell']:.0f}/mo"
-                for mp in _mypa_opts_cfg
-            ]
+            _mypa_opts = ["None"] + [mp["name"].replace("My PA ", "") for mp in _mypa_opts_cfg]
+            _cur_mypa = st.session_state.get("cs_mypa", "None")
+            if _cur_mypa not in _mypa_opts:                                          # old saved label with a price in it
+                st.session_state["cs_mypa"] = next((o for o in _mypa_opts if o.split(" ")[0] == str(_cur_mypa).split(" ")[0]), "None")
             st.selectbox("Call Answer - My PA", _mypa_opts, key="cs_mypa")
         with _cse_col2:
-            for _cs in _cs_exp_cfg[2:]:
-                st.number_input(
-                    f"{_cs['name']}  £{_cs['sell']:.2f}/mo",
-                    min_value=0, value=0, step=1, key=f"cs_{_cs['name']}"
-                )
-            st.selectbox("Website Widget",
-                         ["None", "Include — £50/mo"],
-                         key="cs_website")
+            for _cs in _cs_exp_cfg[1:]:
+                st.number_input(_cs["name"], min_value=0, value=0, step=1, key=f"cs_{_cs['name']}")
+            if st.session_state.get("cs_website", "None") not in ("None", "Include"):
+                st.session_state["cs_website"] = "Include"                            # old saved label with a price in it
+            st.selectbox("Website Widget", ["None", "Include"], key="cs_website")
         st.checkbox("🎁 AI Portal — 1st month free (500 mins)", key="cs_ai_portal_free",
                     help="Promotional offer: first month of AI Portal 500-min bundle at no charge")
+        st.markdown("**Call Scope agreement**")
+        _cag1, _cag2 = st.columns(2)
+        with _cag1:
+            st.selectbox("Call Scope term", [12, 24, 36, 48, 60], index=2, key="cs_term", format_func=lambda m: f"{m} months")
+        with _cag2:
+            st.selectbox("Discount style", ["Stepped - steps up to the standard price", "Fixed - same discount every year"], key="cs_style",
+                         help="Only matters when a Call Scope discount is set (Consultant tab or the sidebar slider).")
+        if (st.session_state.get("current_user") or {}).get("role") == "admin":
+            st.checkbox("Waive the Call Scope set-up fees", key="cs_setup_waive")
 
 # ─── POST-EXPANDER REBUILDS (session state → module-level lists) ─────────────
 # Call Scope services
@@ -3339,19 +3460,15 @@ cs_svc_rows = []
 for _cs in cs_cfg_mod:
     qty = st.session_state.get(f"cs_{_cs['name']}", 0)
     if qty > 0:
-        cs_svc_rows.append({"name": _cs["name"], "qty": qty, "buy": _cs["buy"], "sell": _cs["sell"]})
+        cs_svc_rows.append({"name": CS_DISPLAY_NAMES.get(_cs["name"], _cs["name"]), "qty": qty, "buy": _cs["buy"], "sell": _cs["sell"]})
         # Add minutes bundle cost if selected for AI Integration modules
         if "AI Integration" in _cs["name"]:
             _mins_sel = st.session_state.get(f"cs_mins_{_cs['name']}", "None")
             _mins_cost = _CS_MINS_COSTS.get(_mins_sel, 0.0)
             if _mins_cost > 0:
-                cs_svc_rows.append({"name": f"{_cs['name']} — {_mins_sel.split('—')[0].strip()}",
-                                    "qty": 1, "buy": _CS_MINS_BUY.get(_mins_sel, _mins_cost * 0.4), "sell": _mins_cost})
-_rec_qty = int(st.session_state.get("cs_AI Receptionist", 0) or 0)
-if _rec_qty > 0:      # each AI Receptionist adds its one-off setup to the lease
-    other_quantities["Call Scope AI Receptionist Setup (one-off)"] = _rec_qty
-    if "Call Scope AI Receptionist Setup (one-off)" not in OTHER_HARDWARE:
-        OTHER_HARDWARE["Call Scope AI Receptionist Setup (one-off)"] = {"buy": 69.00, "sell": 100.00}
+                cs_svc_rows.append({"name": f"{CS_DISPLAY_NAMES.get(_cs['name'], _cs['name'])} — {_mins_sel.split('—')[0].strip()}",
+                                    "qty": 1, "buy": _CS_MINS_BUY.get(_mins_sel, _mins_cost * 0.4), "sell": _mins_cost, "minutes": True})
+_rec_qty = int(st.session_state.get("cs_AI Receptionist", 0) or 0)      # its set-up goes on the separate Call Scope order, not the lease
 _cs_mypa_sel  = st.session_state.get("cs_mypa", "None")
 _cs_web_sel   = st.session_state.get("cs_website", "None")
 cs_call_answer = _cs_mypa_sel != "None"
@@ -3364,20 +3481,14 @@ _mypa_defaults_calc = [
     {"name": "My PA 2000 mins", "buy": 180.0, "sell": 249.0},
 ]
 _mypa_cfg_calc = st.session_state.active_config.get("mypa_bundles", _mypa_defaults_calc)
-_CS_MYPA_COSTS = {
-    f"{mp['name'].replace('My PA ','')} — £{mp['sell']:.0f}/mo": mp["sell"]
-    for mp in _mypa_cfg_calc
-}
-_CS_MYPA_BUY = {
-    f"{mp['name'].replace('My PA ','')} — £{mp['sell']:.0f}/mo": mp["buy"]
-    for mp in _mypa_cfg_calc
-}
+_CS_MYPA_COSTS = {mp["name"].replace("My PA ", ""): mp["sell"] for mp in _mypa_cfg_calc}
+_CS_MYPA_BUY = {mp["name"].replace("My PA ", ""): mp["buy"] for mp in _mypa_cfg_calc}
 _mypa_sel = st.session_state.get("cs_mypa", "None")
 if _mypa_sel != "None":
     _mypa_cost = _CS_MYPA_COSTS.get(_mypa_sel, 0.0)
     _mypa_buy  = _CS_MYPA_BUY.get(_mypa_sel, _mypa_cost * 0.7)
     if _mypa_cost > 0:
-        cs_svc_rows.append({"name": f"Call Answer - My PA ({_mypa_sel.split(' —')[0]})",
+        cs_svc_rows.append({"name": f"Call Answer - My PA ({_mypa_sel})",
                             "qty": 1, "buy": _mypa_buy, "sell": _mypa_cost})
 _web_sel = st.session_state.get("cs_website", "None")
 if _web_sel != "None":
@@ -3398,12 +3509,10 @@ for _sc in sec_cfg_mod:
     if qty > 0:
         sec_rows.append({"name": _sc["name"], "qty": qty, "buy": _sc["buy"], "sell": _sc["sell"]})
 
-# Auto-add Call Scope lease items to other_quantities
-# Call Answer - My PA and Website Widget are monthly services, not lease items
-if cs_any_selected and "Call Scope Platform Setup" not in other_quantities:
-    if "Call Scope Platform Setup" not in OTHER_HARDWARE:
-        OTHER_HARDWARE["Call Scope Platform Setup"] = {"buy": 300.00, "sell": 500.00}
-    other_quantities["Call Scope Platform Setup"] = 1
+# Call Scope is its own agreement: its services and set-up fees are priced on their own order (see "CALL SCOPE ORDER" below),
+# so the telephony side of the quote - lease, services, P&L and paperwork - sees none of it.
+cs_order_rows = [dict(r) for r in cs_svc_rows]
+cs_svc_rows = []
 
 # ─── MANAGER OVERRIDE SECTION ────────────────────────────────────────────────
 
@@ -3725,8 +3834,6 @@ def build_proposal_pdf(sign=None, cis=False):
     for _r in cs_svc_rows:
         if _r.get("qty", 0) > 0:
             svc_rows.append((_r["name"], f"{gbp(_r['sell'] * _r['qty'])}/mo", False))
-    if st.session_state.get("cs_ai_portal_free", False):
-        svc_rows.append(("AI Portal 500 mins - first month FREE", f"{gbp(0)} month 1", True))
     for _r in sec_rows:
         if _r.get("qty", 0) > 0:
             svc_rows.append((f"{_r['name']} x{_r['qty']}", f"{gbp(_r['sell'] * _r['qty'])}/mo", False))
@@ -4565,8 +4672,6 @@ def _build_pdf_core(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='
                       f"£0.00/mo (then £{_bb_full_sell:.2f}/mo)")]
     else:
         svc_items = [(f"{bb_provider} - {bb_package}", 1, f"£{svc['bb1_sell']:.2f}/mo")]
-    if st.session_state.get("cs_ai_portal_free", False):
-        svc_items.append(("AI Integration Portal - 1st month FREE (500 mins)", 1, "£0.00 month 1 only"))
     for _xp, _xq, _xs in extra_bb_display():
         svc_items.append((f"{bb_provider} - {_xp} (additional)", _xq, f"£{_xs:.2f}/mo"))
     if total_voice_channels > 0:
@@ -5737,6 +5842,645 @@ This is the whole agreement for the Services and replaces anything said before i
 """
 
 
+# ─── CALL SCOPE ENGINE (pricing maths + pack layout from the stand-alone Call Scope pricebook, kept inside this one file) ───
+import types as _types
+_CSX_SRC = r'''"""Call Scope paperwork engine (embedded in the pricebook so app.py stays a single file).
+Pricing maths and PDF layout taken from the stand-alone Call Scope pricebook."""
+import io
+import math
+from datetime import date
+from fpdf import FPDF
+
+LOGO_BYTES = None   # set by the pricebook before building a pack
+
+
+
+def r2(x):
+    return round(float(x) + 1e-9, 2)
+
+
+def money(x, dp=2):
+    x = float(x or 0)
+    sign = "-" if x < 0 else ""
+    return f"{sign}£{abs(x):,.{dp}f}"
+
+
+def mod_by_id(cfg):
+    return {m["id"]: m for m in cfg["modules"]}
+
+
+def setup_by_id(cfg):
+    return {s["id"]: s for s in cfg["setup"]}
+
+
+def max_discount_for(cfg, months):
+    for t in cfg["customer_terms"]:
+        if int(t["months"]) == int(months):
+            return float(t["max_discount"])
+    return 0.0
+
+
+# ─────────────────────────── CUSTOMER (direct) ───────────────────────────
+def discount_steps(discount, years, style="stepped"):
+    """Discount % for each contract year.
+    stepped: full discount in year 1, then equal steps down so the final year is the standard price.
+    fixed:   the same discount every year of the term."""
+    d = float(discount)
+    if years <= 1 or style == "fixed":
+        return [d] * max(1, years)
+    return [r2(d * (years - 1 - i) / (years - 1)) for i in range(years)]
+
+
+def customer_quote(cfg, qty, minutes=0, agent_setups=0, term=60, discount=0.0, style="stepped",
+                   review_pct=None, setup_mode="invoice"):
+    mods = cfg["modules"]
+    review = cfg["annual_review_pct"] if review_pct is None else float(review_pct)
+    years = max(1, math.ceil(int(term) / 12))
+    steps = discount_steps(discount, years, style)
+
+    lines = []
+    for m in mods:
+        q = int(qty.get(m["id"], 0) or 0)
+        if q <= 0:
+            continue
+        d = steps[0] if m.get("discountable", True) else 0.0
+        unit = r2(m["rrp"] * (1 - d / 100))
+        lines.append({"id": m["id"], "name": m["name"], "unit_label": m.get("unit", ""), "qty": q,
+                      "rrp": r2(m["rrp"]), "price": unit, "total": r2(unit * q), "buy": r2(m["buy"]),
+                      "discountable": m.get("discountable", True)})
+    mins = int(minutes or 0)
+    if mins:
+        mc = cfg["minutes"]
+        p = r2(mins * mc["rrp_per_min"])
+        lines.append({"id": "minutes", "name": f"AI minutes bundle - {mins:,} mins", "unit_label": "per month",
+                      "qty": 1, "rrp": p, "price": p, "total": p, "buy": r2(mins * mc["buy_per_min"]),
+                      "discountable": False})
+
+    # yearly schedule (unit prices rounded to the penny each year so every document agrees)
+    sched = []
+    standard = r2(sum(l["rrp"] * l["qty"] for l in lines))
+    prev = None
+    for y in range(years):
+        d = steps[y]
+        mo = r2(sum((r2(l["rrp"] * (1 - d / 100)) if l["discountable"] else l["rrp"]) * l["qty"] for l in lines))
+        mo_rev = r2(mo * (1 + review / 100) ** y)
+        m_from = y * 12 + 1
+        m_to = min(int(term), (y + 1) * 12)
+        sched.append({"year": y + 1, "months": f"{m_from} - {m_to}", "n_months": m_to - m_from + 1,
+                      "discount": d, "monthly": mo, "monthly_with_review": mo_rev,
+                      "change": None if prev is None else r2(mo - prev)})
+        prev = mo
+
+    # one-off set-up
+    sid = setup_by_id(cfg)
+    setup = []
+    if lines:
+        s = sid.get("platform")
+        if s:
+            setup.append({"name": s["name"], "qty": 1, "price": r2(s["rrp"]), "buy": r2(s["buy"])})
+        n_rec = int(qty.get("receptionist", 0) or 0)
+        s = sid.get("rec_setup")
+        if s and n_rec:
+            setup.append({"name": s["name"], "qty": n_rec, "price": r2(s["rrp"]), "buy": r2(s["buy"])})
+        s = sid.get("agent_setup")
+        if s and agent_setups:
+            setup.append({"name": s["name"], "qty": int(agent_setups), "price": r2(s["rrp"]), "buy": r2(s["buy"])})
+    for s in setup:
+        s["total"] = r2(s["price"] * s["qty"])
+    setup_total = r2(sum(s["total"] for s in setup)) if setup_mode != "waived" else 0.0
+    setup_list_total = r2(sum(s["total"] for s in setup))
+
+    monthly_total = sched[0]["monthly"] if lines else 0.0
+    services_value = r2(sum(s["monthly"] * s["n_months"] for s in sched))
+    services_value_rev = r2(sum(s["monthly_with_review"] * s["n_months"] for s in sched))
+    buy_mo = r2(sum(l["buy"] * l["qty"] for l in lines))
+    setup_buy = r2(sum(s["buy"] * s["qty"] for s in setup))
+    profit = r2(services_value - buy_mo * int(term) + setup_total - setup_buy)
+    return {
+        "lines": lines, "schedule": sched, "setup": setup, "setup_total": setup_total,
+        "setup_list_total": setup_list_total, "setup_mode": setup_mode,
+        "standard_monthly": standard, "monthly_total": monthly_total, "term": int(term), "years": years,
+        "discount": float(discount), "style": style, "review_pct": review,
+        "services_value": services_value, "services_value_with_review": services_value_rev,
+        "contract_value": r2(services_value + setup_total),
+        "buy_monthly": buy_mo, "setup_buy": setup_buy, "profit": profit,
+        "saving_vs_standard": r2(standard * int(term) - services_value),
+    }
+
+
+
+INK, MUTE, LINE = (30, 32, 44), (110, 116, 135), (222, 224, 236)
+
+_MAP = {"–": "-", "—": "-", "‘": "'", "’": "'", "“": '"', "”": '"', "•": "-",
+        "…": "...", " ": " ", "→": "->", "≥": ">=", "≤": "<="}
+
+
+def s(x):
+    t = str(x if x is not None else "")
+    for k, v in _MAP.items():
+        t = t.replace(k, v)
+    return t.encode("latin-1", "replace").decode("latin-1")
+
+
+def hx(h, dflt):
+    try:
+        h = str(h).lstrip("#")
+        return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+    except Exception:
+        return dflt
+
+
+def tint(rgb, f):
+    return tuple(int(255 - (255 - c) * f) for c in rgb)
+
+
+class Doc(FPDF):
+    def __init__(self, brand, label):
+        super().__init__(orientation="P", unit="mm", format="A4")
+        self.B = brand
+        self.label = label
+        self.VIO = hx(brand.get("accent"), (120, 112, 232))
+        self.NAVY = hx(brand.get("navy"), (16, 25, 56))
+        self.TINT = tint(self.VIO, 0.09)
+        self.alias_nb_pages()
+        self.set_margins(15, 15, 15)
+        self.set_auto_page_break(True, margin=20)
+
+    def header(self):
+        B = self.B
+        if LOGO_BYTES:
+            try:
+                self.image(io.BytesIO(LOGO_BYTES), x=15, y=8, h=17)
+            except Exception:
+                pass
+        self.set_xy(45, 10.5)
+        self.set_font("Helvetica", "B", 13); self.set_text_color(*self.NAVY)
+        self.cell(90, 6, s(B["trading"]), new_x="LMARGIN", new_y="NEXT")
+        self.set_x(45)
+        self.set_font("Helvetica", "", 8); self.set_text_color(*MUTE)
+        self.cell(100, 4.5, s(f"{B['byline']}  |  {B['tag']}" if B.get("byline") else B.get("tag", "")))
+        self.set_xy(120, 11)
+        self.set_font("Helvetica", "B", 8); self.set_text_color(*self.VIO)
+        self.cell(75, 5, s(self.label), align="R")
+        if getattr(self, "supplier", None):
+            self.set_xy(110, 16.5)
+            self.set_font("Helvetica", "", 7.5); self.set_text_color(*MUTE)
+            self.cell(85, 4, s("Supplied by " + self.supplier.get("company", "")), align="R")
+        self.set_fill_color(*self.VIO); self.rect(15, 28, 180, 0.9, "F")
+        self.set_y(34)
+
+    def footer(self):
+        B = self.B
+        self.set_y(-14)
+        self.set_font("Helvetica", "", 7); self.set_text_color(*MUTE)
+        bits = [f"{B['trading']} {B.get('byline', '')}".strip(), B.get("legal", ""), "All figures exclude VAT", "Confidential"]
+        self.cell(0, 4, s("  |  ".join(b for b in bits if b)), align="C", new_x="LMARGIN", new_y="NEXT")
+        self.cell(0, 4, f"Page {self.page_no()} of {{nb}}", align="C")
+
+    # ── building blocks ──
+    def doc_title(self, text, sub=""):
+        self.set_font("Helvetica", "B", 17); self.set_text_color(*self.NAVY)
+        self.cell(0, 9, s(text), new_x="LMARGIN", new_y="NEXT")
+        if sub:
+            self.set_font("Helvetica", "", 8); self.set_text_color(*MUTE)
+            self.cell(0, 5, s(sub), new_x="LMARGIN", new_y="NEXT")
+        self.ln(3)
+
+    def section(self, text):
+        self.ln(3)
+        y = self.get_y()
+        self.set_fill_color(*self.VIO); self.rect(15, y + 0.6, 1.4, 5.2, "F")
+        self.set_x(19.5)
+        self.set_font("Helvetica", "B", 10.5); self.set_text_color(*self.NAVY)
+        self.cell(0, 6.5, s(text), new_x="LMARGIN", new_y="NEXT")
+        self.ln(1.5)
+
+    def para(self, text, size=8.5, color=INK, h=4.3):
+        self.set_font("Helvetica", "", size); self.set_text_color(*color)
+        self.multi_cell(180, h, s(text), new_x="LMARGIN", new_y="NEXT")
+
+    def details_box(self, pairs_left, pairs_right):
+        y0 = self.get_y()
+        rows = max(len(pairs_left), len(pairs_right))
+        h = rows * 6 + 4
+        self.set_fill_color(*self.TINT); self.set_draw_color(*tint(self.VIO, 0.3))
+        self.rect(15, y0, 180, h, "DF")
+        for col, pairs in ((0, pairs_left), (1, pairs_right)):
+            for i, (k, v) in enumerate(pairs):
+                x = 18 + col * 90
+                self.set_xy(x, y0 + 2 + i * 6)
+                self.set_font("Helvetica", "B", 7.5); self.set_text_color(*MUTE)
+                self.cell(24, 6, s(k))
+                self.set_font("Helvetica", "", 8.5); self.set_text_color(*INK)
+                self.cell(64, 6, s(v)[:52])
+        self.set_y(y0 + h + 2)
+
+    def table(self, cols, rows, bold_cols=(), mute_cols=(), zebra=True, size=8.5):
+        """cols: [(header, width, align)]. rows: list of lists of strings."""
+        self.set_fill_color(*self.NAVY); self.set_text_color(255, 255, 255)
+        self.set_font("Helvetica", "B", 8)
+        for h, w, a in cols:
+            self.cell(w, 7, s(" " + h + " ") if a == "L" else s(h + " "), align=a, fill=True)
+        self.ln(7)
+        for i, r in enumerate(rows):
+            if self.get_y() > 265:
+                self.add_page()
+            fill = zebra and i % 2 == 1
+            self.set_fill_color(*tint(self.VIO, 0.05))
+            for j, (v, (h, w, a)) in enumerate(zip(r, cols)):
+                self.set_font("Helvetica", "B" if j in bold_cols else "", size)
+                self.set_text_color(*(MUTE if j in mute_cols else INK))
+                self.cell(w, 6.6, s(" " + str(v) + " ") if a == "L" else s(str(v) + " "), align=a, fill=fill)
+            self.ln(6.6)
+
+    def total_bar(self, label, value):
+        self.set_fill_color(*self.NAVY); self.set_text_color(255, 255, 255)
+        self.set_font("Helvetica", "B", 9.5)
+        self.cell(140, 8.5, s("  " + label), fill=True)
+        self.cell(40, 8.5, s(value + " "), align="R", fill=True, new_x="LMARGIN", new_y="NEXT")
+
+    def callout(self, head, body):
+        y0 = self.get_y() + 2
+        self.set_xy(18, y0 + 2)
+        self.set_font("Helvetica", "B", 8.5); self.set_text_color(*self.VIO)
+        self.multi_cell(174, 4.5, s(head), new_x="LMARGIN", new_y="NEXT")
+        self.set_x(18)
+        self.set_font("Helvetica", "", 7.8); self.set_text_color(*INK)
+        self.multi_cell(174, 4, s(body), new_x="LMARGIN", new_y="NEXT")
+        y1 = self.get_y() + 2
+        self.set_draw_color(*self.VIO); self.set_line_width(0.35)
+        self.rect(15, y0, 180, y1 - y0, "D")
+        self.set_line_width(0.2)
+        self.set_y(y1 + 1)
+
+    def tiles(self, items, per_row=4):
+        w = (180 - (per_row - 1) * 3) / per_row
+        for start in range(0, len(items), per_row):
+            y0 = self.get_y()
+            for i, (k, v) in enumerate(items[start:start + per_row]):
+                x = 15 + i * (w + 3)
+                self.set_fill_color(*self.TINT); self.set_draw_color(*tint(self.VIO, 0.3))
+                self.rect(x, y0, w, 15, "DF")
+                self.set_xy(x + 3, y0 + 2)
+                self.set_font("Helvetica", "B", 6.5); self.set_text_color(*MUTE)
+                self.cell(w - 6, 4, s(k.upper()))
+                self.set_xy(x + 3, y0 + 7.5)
+                self.set_font("Helvetica", "B", 9); self.set_text_color(*self.NAVY)
+                self.cell(w - 6, 5, s(v))
+            self.set_y(y0 + 18)
+
+    def bars(self, values, labels, sub=None, h=26):
+        if not values:
+            return
+        n = len(values)
+        top = max(values) or 1
+        gap = 4
+        w = min(32, (180 - gap * (n - 1)) / n)
+        y0 = self.get_y() + 2
+        base = y0 + h
+        for i, v in enumerate(values):
+            x = 15 + i * (w + gap)
+            bh = max(1.5, h * v / top)
+            f = 0.45 + 0.55 * (i / max(1, n - 1))
+            self.set_fill_color(*tint(self.VIO, f))
+            self.rect(x, base - bh, w, bh, "F")
+            self.set_xy(x, base + 1)
+            self.set_font("Helvetica", "B", 7.5); self.set_text_color(*INK)
+            self.cell(w, 4, s(labels[i]), align="C")
+            if sub:
+                self.set_xy(x, base + 4.6)
+                self.set_font("Helvetica", "", 6.8); self.set_text_color(*MUTE)
+                self.cell(w, 3.5, s(sub[i]), align="C")
+        self.set_y(base + 10)
+
+    def bullets(self, items, size=8.3):
+        for it in items:
+            self.set_x(17)
+            self.set_font("Helvetica", "", size); self.set_text_color(*MUTE)
+            self.cell(4, 4.4, "-")
+            self.set_text_color(*INK)
+            self.multi_cell(174, 4.4, s(it), new_x="LMARGIN", new_y="NEXT")
+
+    def terms_pages(self, title, terms, provider_line):
+        self.add_page()
+        self.doc_title(title, provider_line)
+        for head, paras in terms:
+            if self.get_y() > 258:
+                self.add_page()
+            self.ln(1.6)
+            self.set_fill_color(*self.TINT); self.set_text_color(*self.VIO); self.set_font("Helvetica", "B", 8)
+            self.cell(180, 5.2, s("  " + head), fill=True, new_x="LMARGIN", new_y="NEXT")
+            self.set_text_color(*INK); self.set_font("Helvetica", "", 7.1)
+            for p in paras:
+                self.multi_cell(180, 3.5, s(p), align="J", new_x="LMARGIN", new_y="NEXT")
+                self.ln(0.6)
+
+    def sign_block(self, heading, left_title, left_lines, right_title, right_lines):
+        if self.get_y() > 225:
+            self.add_page()
+        self.ln(3)
+        self.set_fill_color(*self.NAVY); self.set_text_color(255, 255, 255); self.set_font("Helvetica", "B", 8.5)
+        self.cell(180, 7, s("  " + heading), fill=True, new_x="LMARGIN", new_y="NEXT")
+        self.ln(2)
+        y0 = self.get_y()
+        for col, (t, lines) in enumerate(((left_title, left_lines), (right_title, right_lines))):
+            self.set_xy(15 + col * 92, y0)
+            self.set_font("Helvetica", "B", 8.3); self.set_text_color(*INK)
+            self.cell(88, 5.5, s(t))
+            for i, ln in enumerate(lines):
+                self.set_xy(15 + col * 92, y0 + 6 + i * 6.2)
+                self.set_font("Helvetica", "", 8.3)
+                self.cell(88, 6, s(ln))
+        self.set_y(y0 + 6 + max(len(left_lines), len(right_lines)) * 6.2 + 2)
+
+
+def _blank(v, n=24):
+    return v if v else "_" * n
+
+
+def supplier_panel(pdf, sup):
+    """'Your supplier' box with the reseller's logo and contact details."""
+    y0 = pdf.get_y() + 1
+    pdf.set_fill_color(255, 255, 255); pdf.set_draw_color(*tint(pdf.VIO, 0.35))
+    pdf.rect(15, y0, 180, 20, "DF")
+    x = 19
+    lb = sup.get("logo_b64")
+    if lb:
+        try:
+            import base64 as _b64
+            pdf.image(io.BytesIO(_b64.b64decode(lb)), x=19, y=y0 + 3, h=14, keep_aspect_ratio=True)
+            x = 62
+        except Exception:
+            pass
+    pdf.set_xy(x, y0 + 3); pdf.set_font("Helvetica", "B", 6.8); pdf.set_text_color(*pdf.VIO)
+    pdf.cell(80, 4, "YOUR SUPPLIER")
+    pdf.set_xy(x, y0 + 7.5); pdf.set_font("Helvetica", "B", 10); pdf.set_text_color(*pdf.NAVY)
+    pdf.cell(130, 5, s(sup.get("company", "")))
+    pdf.set_xy(x, y0 + 12.8); pdf.set_font("Helvetica", "", 7.8); pdf.set_text_color(*MUTE)
+    pdf.cell(130, 4, s("  |  ".join(v for v in (sup.get("phone"), sup.get("email"), sup.get("address")) if v))[:120])
+    pdf.set_y(y0 + 23)
+
+
+def cover_page(pdf, cfg, who, title_line, tiles, docs, services=None, prepared_by="", sign=None, highlight=None):
+    """Page 1: 'Agreement to go ahead'. One signature here accepts every page of the pack - the box to drop the
+    Zoho Sign signature field onto (or the on-screen signature when signed in person)."""
+    B = cfg["brand"]
+    sign = sign or {}
+    pdf.label = "AGREEMENT TO GO AHEAD"
+    pdf.add_page()
+    pdf.doc_title("Agreement to go ahead", title_line)
+    pdf.para(f"Thank you for choosing {B['trading']}. This page summarises your agreement. Signing once, at the bottom of this page, "
+             "confirms you accept every page in this pack - there is nothing else to sign.")
+    pdf.ln(3)
+    if getattr(pdf, "supplier", None):
+        supplier_panel(pdf, pdf.supplier)
+    pdf.tiles(tiles)
+    if highlight:
+        pdf.callout(*highlight)
+    if services:
+        pdf.section("What you are ordering")
+        pdf.table([("Item", 150, "L"), ("Qty", 30, "C")], [[n, q] for n, q in services], zebra=False)
+    pdf.section("What is in this pack")
+    pdf.table([("Document", 55, "L"), ("Pages", 25, "C"), ("What it covers", 100, "L")], docs, bold_cols=(0,), zebra=False)
+
+    # declaration + signature panel - kept together at the foot of the page
+    need = 70
+    if pdf.get_y() + need > 277:
+        pdf.add_page()
+    else:
+        pdf.set_y(max(pdf.get_y() + 4, 277 - need))
+    company = who.get("company") or "the business named above"
+    pdf.set_fill_color(*pdf.NAVY); pdf.set_text_color(255, 255, 255); pdf.set_font("Helvetica", "B", 9)
+    pdf.cell(180, 7.5, s("  Agreement to go ahead"), fill=True, new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(1.5)
+    pdf.set_font("Helvetica", "", 8.2); pdf.set_text_color(*INK)
+    pdf.multi_cell(180, 4.2, s(f"I am authorised to sign for {company}. I have read and agree to everything in this pack (pages 2 to {{nb}}) "
+                               f"and I ask {B['legal']} to go ahead."), new_x="LMARGIN", new_y="NEXT")
+    y0 = pdf.get_y() + 3
+    # signature box
+    pdf.set_fill_color(255, 255, 255); pdf.set_draw_color(*pdf.VIO); pdf.set_line_width(0.5)
+    pdf.rect(15, y0, 92, 30, "DF")
+    pdf.set_line_width(0.2)
+    pdf.set_xy(18, y0 + 2); pdf.set_font("Helvetica", "B", 6.8); pdf.set_text_color(*pdf.VIO)
+    pdf.cell(60, 4, "CUSTOMER SIGNATURE" if who.get("_kind") != "partner" else "PARTNER SIGNATURE")
+    sb = sign.get("sig")
+    if sb and len(sb) > 100:
+        try:
+            pdf.image(io.BytesIO(sb), x=20, y=y0 + 7, w=60, h=20, keep_aspect_ratio=True)
+        except Exception:
+            pass
+    # name / position / company / date
+    rows = [("Name", sign.get("name") or who.get("contact", "")), ("Position", sign.get("position") or who.get("position", "")),
+            ("Company", who.get("company", "")), ("Date", sign.get("date", ""))]
+    for i, (k, v) in enumerate(rows):
+        yy = y0 + 1 + i * 7.3
+        pdf.set_xy(112, yy); pdf.set_font("Helvetica", "B", 7); pdf.set_text_color(*MUTE)
+        pdf.cell(18, 6, s(k.upper()))
+        pdf.set_font("Helvetica", "", 8.6); pdf.set_text_color(*INK)
+        pdf.cell(65, 6, s(v)[:40])
+        pdf.set_draw_color(*LINE); pdf.line(130, yy + 6, 195, yy + 6)
+    pdf.set_y(y0 + 33)
+    pdf.set_font("Helvetica", "", 7.4); pdf.set_text_color(*MUTE)
+    pdf.cell(0, 4.5, s(f"For {B['legal']}:  {_blank(prepared_by, 26)}    Date:  {date.today().strftime('%d/%m/%Y')}"),
+             new_x="LMARGIN", new_y="NEXT")
+
+
+def signed_note(pdf, text):
+    pdf.ln(4)
+    pdf.set_fill_color(*pdf.TINT); pdf.set_text_color(*pdf.VIO); pdf.set_font("Helvetica", "B", 8)
+    pdf.cell(180, 7, s("  " + text), fill=True, new_x="LMARGIN", new_y="NEXT")
+
+
+# ─────────────────────────── CUSTOMER PACK ───────────────────────────
+DD_GUARANTEE = [
+    "The Guarantee is offered by all banks and building societies that accept instructions to pay Direct Debits.",
+    "If there are any changes to the amount, date or frequency of your Direct Debit, {WHO} will notify you in advance of your account being debited or as otherwise agreed.",
+    "If you request {WHO} to collect a payment, confirmation of the amount and date will be given to you at the time of the request.",
+    "If an error is made in the payment of your Direct Debit, by {WHO} or your bank or building society, you are entitled to a full and immediate refund of the amount paid from your bank or building society. If you receive a refund you are not entitled to, you must pay it back when {WHO} asks you to.",
+    "You can cancel a Direct Debit at any time by simply contacting your bank or building society. Written confirmation may be required. Please also notify {WHO}.",
+]
+
+
+def mandate_page(pdf, cfg, q, cust, bank, sign=None):
+    """Direct Debit mandate for the Call Scope monthly charges - bank details, authority, guarantee and a signature box."""
+    B = cfg["brand"]
+    sign = sign or {}
+    bank = bank or {}
+    who = B["legal"] or B["trading"]
+    pdf.label = "DIRECT DEBIT MANDATE"
+    pdf.add_page()
+    pdf.doc_title("Direct Debit Mandate", f"For the monthly {B['trading']} charges  |  {who}")
+    pdf.details_box([("Business", cust.get("company", "")), ("Contact", cust.get("contact", ""))],
+                    [("Email", cust.get("email", "")), ("Telephone", cust.get("phone", ""))])
+    pdf.section("Your bank details")
+    pdf.details_box([("Bank name", bank.get("bank", "")), ("Account holder", bank.get("holder", ""))],
+                    [("Account no.", bank.get("accno", "")), ("Sort code", bank.get("sort", ""))])
+    if bank.get("addr"):
+        pdf.para("Bank address: " + bank["addr"], size=8, color=MUTE)
+    pdf.section("Your instruction")
+    amt = money(q["monthly_total"])
+    paras = [
+        f"I/we instruct my/our bank or building society to pay {who} by Direct Debit the monthly charges for the {B['trading']} "
+        f"services on the attached Service Order. The first monthly payment is {amt} + VAT. The amount changes as shown on the "
+        f"Price Schedule, and when services are added or removed, and {who} will tell you in advance, as set out in the Guarantee below.",
+        "Payments are collected on or around the 1st of each month, starting from the date the services go live.",
+    ]
+    if q["setup"] and q["setup_mode"] == "invoice":
+        paras.append(f"One-off set-up charges ({money(q['setup_total'])} + VAT) are invoiced separately when the Order is accepted "
+                     "and are not part of the monthly Direct Debit unless we agree otherwise in writing.")
+    for t in paras:
+        pdf.para(t)
+        pdf.ln(1.5)
+    pdf.section("The Direct Debit Guarantee")
+    pdf.set_font("Helvetica", "", 7.6); pdf.set_text_color(*INK)
+    for t in DD_GUARANTEE:
+        pdf.set_x(17)
+        pdf.cell(4, 4, "-")
+        pdf.multi_cell(174, 4, s(t.replace("{WHO}", who)), new_x="LMARGIN", new_y="NEXT")
+    y0 = pdf.get_y() + 6
+    if y0 > 235:
+        pdf.add_page(); y0 = pdf.get_y() + 4
+    pdf.set_fill_color(255, 255, 255); pdf.set_draw_color(*pdf.VIO); pdf.set_line_width(0.5)
+    pdf.rect(15, y0, 92, 30, "DF"); pdf.set_line_width(0.2)
+    pdf.set_xy(18, y0 + 2); pdf.set_font("Helvetica", "B", 6.8); pdf.set_text_color(*pdf.VIO)
+    pdf.cell(70, 4, "ACCOUNT HOLDER SIGNATURE")
+    sb = sign.get("sig")
+    if sb and len(sb) > 100:
+        try:
+            pdf.image(io.BytesIO(sb), x=20, y=y0 + 7, w=60, h=20, keep_aspect_ratio=True)
+        except Exception:
+            pass
+    rows = [("Name", sign.get("name") or cust.get("contact", "")), ("Company", cust.get("company", "")),
+            ("Date", sign.get("date", ""))]
+    for i, (k, v) in enumerate(rows):
+        yy = y0 + 4 + i * 8
+        pdf.set_xy(112, yy); pdf.set_font("Helvetica", "B", 7); pdf.set_text_color(*MUTE)
+        pdf.cell(18, 6, s(k.upper()))
+        pdf.set_font("Helvetica", "", 8.6); pdf.set_text_color(*INK)
+        pdf.cell(65, 6, s(v)[:40])
+        pdf.set_draw_color(*LINE); pdf.line(130, yy + 6, 195, yy + 6)
+    pdf.set_y(y0 + 34)
+
+
+def customer_pack(cfg, q, cust, terms, prepared_by="", sign=None, bank=None, notes=None, price_note="", show_mandate=True):
+    """Call Scope pack: Agreement to go ahead, Service Order, Price Schedule, Terms & Conditions, Direct Debit mandate.
+    terms: [(heading, [paragraphs])] already filled in."""
+    B = cfg["brand"]
+    q = dict(q, show_review=False)
+    pdf = Doc(B, "SERVICE ORDER")
+    pdf.supplier = None
+    disc = q["discount"] > 0
+    stepped = disc and q["style"] == "stepped" and q["years"] > 1
+    setup_txt = {"invoice": money(q["setup_total"]), "spread": "Over 12 months", "included": "In equipment deal",
+                 "waived": "Waived"}[q["setup_mode"]] if q["setup"] else "None"
+    docs = [["Service Order", "2", "Your services, prices and set-up"],
+            ["Price Schedule", "3", "How your monthly charge changes each year"],
+            ["Terms & Conditions", "4 onwards", f"The {B['trading']} terms for the service"]]
+    if show_mandate:
+        docs.append(["Direct Debit Mandate", "Last page", "How the monthly charges are paid"])
+    cover_page(pdf, cfg, cust, f"{B['trading']} for {cust.get('company') or 'your business'}  |  "
+               f"Prepared {date.today().strftime('%d %B %Y')}" + (f" by {prepared_by}" if prepared_by else ""),
+               [("Monthly" + (" (year 1)" if stepped else ""), money(q["monthly_total"])), ("Minimum term", f"{q['term']} months"),
+                ("One-off set-up", setup_txt), ("Starts", "On go-live")],
+               docs, services=[(l["name"], l["qty"]) for l in q["lines"]], prepared_by=prepared_by, sign=sign)
+    pdf.label = "SERVICE ORDER"
+    pdf.add_page()
+    today = date.today().strftime("%d %B %Y")
+    pdf.doc_title(f"{B['trading']} Service Order", f"Prepared {today}" + (f"  |  by {prepared_by}" if prepared_by else ""))
+    contact = cust.get("contact", "") + (f" - {cust['position']}" if cust.get("position") else "")
+    pdf.details_box([("Customer", cust.get("company", "")), ("Contact", contact), ("Email", cust.get("email", ""))],
+                    [("Company no.", cust.get("company_no", "")), ("Address", cust.get("address", "")),
+                     ("Telephone", cust.get("phone", ""))])
+    pdf.section(f"Your {B['trading']} services")
+    cols = [("Service", 95, "L"), ("Qty", 15, "C"), ("Standard /mo", 24, "R"), ("Your price /mo", 23, "R"), ("Monthly total", 23, "R")]
+    rows = [[l["name"], l["qty"], money(l["rrp"]), money(l["price"]), money(l["total"])] for l in q["lines"]]
+    pdf.table(cols, rows, bold_cols=(3, 4), mute_cols=(2,), zebra=False)
+    pdf.total_bar("Monthly total at the start of the agreement (excl. VAT)", money(q["monthly_total"]))
+    if disc:
+        if q["years"] <= 1 or q["style"] == "fixed":
+            body = "Applies for the whole of your minimum term - see the Price Schedule on the next page."
+            head = f"Your discount: {q['discount']:g}% off the standard price"
+        else:
+            body = ("Applies for the first 12 months, then reduces in steps to the standard price - "
+                    "see the Price Schedule on the next page.")
+            head = f"Introductory discount: {q['discount']:g}% off the standard price"
+        pdf.callout(head, body)
+    for head, body in (notes or []):
+        pdf.callout(head, body)
+    if q["setup"]:
+        pdf.section("One-off set-up")
+        cols = [("Item", 130, "L"), ("Qty", 20, "C"), ("Price (excl. VAT)", 30, "R")]
+        rows = [[x["name"], x["qty"], money(x["total"])] for x in q["setup"]]
+        pdf.table(cols, rows, zebra=False)
+        note = {"invoice": "Set-up is invoiced when your Order is accepted.",
+                "spread": f"Set-up is spread over your first 12 months: {money(q['setup_list_total'] / 12)} per month on top of the charges above.",
+                "waived": "Set-up has been waived for this Order.",
+                "included": "Set-up is included in your separate equipment or telephony agreement and spread over its term."}[q["setup_mode"]]
+        pdf.set_font("Helvetica", "I", 7.5); pdf.set_text_color(*MUTE)
+        pdf.cell(0, 5, s(note), new_x="LMARGIN", new_y="NEXT")
+    pdf.section("Your agreement at a glance")
+    pdf.tiles([("Minimum term", f"{q['term']} months"), ("Billing", "Monthly in advance"),
+               ("Start date", "On go-live"), ("Renewal", f"Rolling {int(cfg['renewal_months'])} months")])
+    pdf.set_font("Helvetica", "", 7.5); pdf.set_text_color(*MUTE)
+    pdf.multi_cell(180, 4, s(f"This Order is a stand-alone agreement for {B['trading']} services, separate from any telephony or "
+                             f"equipment agreement you have with us. The {B['trading']} Terms & Conditions follow the Price Schedule."),
+                   new_x="LMARGIN", new_y="NEXT")
+
+    # price schedule
+    pdf.label = "PRICE SCHEDULE"
+    pdf.add_page()
+    pdf.doc_title("Your Price Schedule", f"How your monthly {B['trading']} charges move over your {q['term']}-month agreement")
+    sched = q["schedule"]
+    std = q["standard_monthly"]
+    if q["years"] <= 1 or q["style"] == "fixed" or not disc:
+        intro = (f"Your monthly charge is {money(q['monthly_total'])}"
+                 + (f", which includes a {q['discount']:g}% discount on your modules (standard price {money(std)} per month)" if disc else "")
+                 + f" and applies for your whole {q['term']}-month minimum term.")
+    else:
+        intro = (f"You are receiving an introductory discount of {q['discount']:g}% on the standard {B['trading']} price. "
+                 f"It applies in full for your first 12 months. After that it reduces in equal steps each year, so that in year "
+                 f"{q['years']} - the final year of your agreement - you pay the full standard price of {money(std)} per month. "
+                 "It does not jump straight to the full price after the first year.")
+    pdf.para(intro)
+    pdf.ln(3)
+    cols = [("Year", 25, "L"), ("Months", 40, "L"), ("Monthly charge", 40, "R"), ("Change on last year", 40, "R"), ("Discount remaining", 35, "R")]
+    rows, prev = [], None
+    for r in sched:
+        mo = r["monthly"]
+        ch = "-" if prev is None else ("+ " + money(mo - prev) if mo >= prev else "- " + money(prev - mo))
+        dl = "Standard price" if r["discount"] <= 0 else f"{r['discount']:g}% off"
+        rows.append([f"Year {r['year']}", f"Months {r['months']}", money(mo), ch, dl])
+        prev = mo
+    pdf.table(cols, rows, bold_cols=(2,))
+    pdf.set_font("Helvetica", "I", 7.5); pdf.set_text_color(*MUTE)
+    pdf.cell(0, 5, s(f"All figures are per month, exclude VAT, and apply to the {B['trading']} services listed on your Order."),
+             new_x="LMARGIN", new_y="NEXT")
+    vals = [r["monthly"] for r in sched]
+    pdf.bars(vals, [money(v) for v in vals], [f"Year {r['year']}" for r in sched])
+    pdf.section("What this means")
+    pts = []
+    if stepped:
+        pts.append(f"Months 1 to 12: you pay your discounted price of {money(sched[0]['monthly'])} per month.")
+        pts.append(f"From month 13 the discount reduces in equal annual steps. By year {q['years']} - the end of your agreement - "
+                   "you pay the full standard price.")
+    else:
+        pts.append(f"Your monthly charge of {money(q['monthly_total'])} applies for the whole minimum term, subject to the price terms below.")
+    if price_note:
+        pts.append(price_note)
+    pts.append("If you add or remove users or modules, this schedule is recalculated in the same way.")
+    pdf.bullets(pts)
+    signed_note(pdf, "This Order and Price Schedule are accepted by signing the Agreement to go ahead on page 1.")
+
+    pdf.label = "TERMS & CONDITIONS"
+    pdf.terms_pages(f"{B['trading']} Terms & Conditions", terms,
+                    f"Provided by {B['legal']}" + (f"  |  {B['address']}" if B.get("address") else ""))
+    if show_mandate:
+        mandate_page(pdf, cfg, q, cust, bank, sign)
+    return bytes(pdf.output())
+'''
+_csx = _types.ModuleType("csx_embedded")
+exec(compile(_CSX_SRC, "csx_embedded", "exec"), _csx.__dict__)
+
 def cs_brand():
     b = dict(_CS_BRAND_DEFAULT)
     b.update({k: v for k, v in (st.session_state.active_config.get("callscope_brand") or {}).items() if v})
@@ -5760,12 +6504,12 @@ def cs_logo_bytes(b=None):
         return None
 
 
-def cs_terms_list():
+def cs_terms_list(term_months=None):
     """[(heading, [paragraphs])] - the Call Scope Terms & Conditions with the brand details filled in."""
     b = cs_brand()
     raw = st.session_state.active_config.get("callscope_terms_text") or _CS_TERMS_DEFAULT
     subs = {"{PROVIDER}": b["legal"], "{BRAND}": b["trading"], "{EMAIL}": b["email"] or "the address on your Order",
-            "{TERM}": f"{int(lease_term)} months"}
+            "{TERM}": f"{int(term_months or lease_term)} months"}
     out, cur = [], None
     for line in raw.splitlines():
         if line.startswith("## "):
@@ -5785,6 +6529,33 @@ def cs_terms_list():
             txt = [t.replace(k, v) for t in txt]
         res.append((h, txt))
     return res
+
+
+_CS_PRICE_NOTE = ("Call Scope sets its own prices. The charges are fixed for the first 12 months; after that they may be increased on at least "
+                  "30 days' notice, including by removing any introductory discount (see the price clause in the Terms & Conditions).")
+
+
+def build_callscope_pack(sign=None):
+    """The separate Call Scope pack: Agreement to go ahead, Service Order, Price Schedule, Terms & Conditions and a Direct Debit mandate.
+    sign = {"sig": png bytes or None, "name": str, "date": str}. None if no Call Scope is selected."""
+    if not cs_quote:
+        return None
+    B = cs_brand()
+    G = st.session_state.get
+    sign = sign or {}
+    _csx.LOGO_BYTES = cs_logo_bytes(B)
+    cfgx = {"brand": B, "renewal_months": 12, "annual_review_pct": 0.0}
+    nm = str(G("q_contact") or "")
+    parts = [x.strip() for x in nm.split(" - ", 1)]
+    cust = {"company": G("q_comp_name") or "", "contact": parts[0], "position": parts[1] if len(parts) > 1 else "",
+            "email": G("q_dir_email") or "", "phone": G("q_phone") or "", "address": G("q_address") or "",
+            "company_no": G("q_comp_reg") or ""}
+    bank = {"bank": G("q_bank_name") or "", "holder": G("q_acc_holder") or G("q_comp_name") or "", "accno": G("q_acc_no") or "",
+            "sort": G("q_sort_code") or "", "addr": G("q_bank_addr") or ""}
+    sg = {"sig": sign.get("sig"), "name": sign.get("name") or parts[0], "position": parts[1] if len(parts) > 1 else "",
+          "date": sign.get("date", "")}
+    return _csx.customer_pack(cfgx, cs_quote, cust, cs_terms_list(cs_quote["term"]), prepared_by=_prepared_by(), sign=sg,
+                              bank=bank, notes=cs_notes, price_note=_CS_PRICE_NOTE)
 
 
 def build_callscope_terms_pdf(sign=None):
@@ -5903,13 +6674,8 @@ def build_pdf(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='', sig
         from pypdf import PdfReader, PdfWriter
         prop = build_proposal_pdf(sign={"sig_bytes": None, "name": sig_name,      # always blank: this box is signed in Zoho Sign
                                         "company": sig_company, "timestamp": sig_timestamp})
-        _cs_terms = None
-        try:
-            _cs_terms = build_callscope_terms_pdf(sign={"sig_bytes": sig_bytes, "name": sig_name, "company": sig_company, "ts": sig_timestamp})
-        except Exception as _cs_err:
-            st.session_state["_pack_merge_error"] = ("Call Scope terms: " + str(_cs_err))[:200]
-        w = PdfWriter()
-        for src in (prop, core, _cs_terms):
+        w = PdfWriter()      # Call Scope has its own separate pack (build_callscope_pack) - nothing of it goes in here
+        for src in (prop, core):
             if not src:
                 continue
             for pg in PdfReader(io.BytesIO(src)).pages:
@@ -6338,6 +7104,41 @@ if cs_disc_pct > 0:
         _r["sell"] = round(_r["sell"] * _cs_mult, 2)
     _cs_svc_sell = sum(r["sell"] * r["qty"] for r in cs_svc_rows)
     svc["cs_sell"] = _cs_svc_sell
+# ═══ CALL SCOPE ORDER - priced on its own, never added into the telephony totals, lease, P&L or paperwork ═══
+cs_quote = None
+cs_notes = []
+cs_crm_missing = False
+if cs_order_rows:
+    _cs_mods = []
+    for _i, _r in enumerate(cs_order_rows):
+        _mid = "receptionist" if _r["name"] == "AI Receptionist" else f"m{_i}"
+        _cs_mods.append({"id": _mid, "name": _r["name"], "unit": "", "buy": float(_r["buy"]), "wholesale": 0.0,
+                         "rrp": float(_r["sell"]), "discountable": not _r.get("minutes"), "qty": int(_r["qty"])})
+    _plat = OTHER_HARDWARE.get("Call Scope Platform Setup", {"buy": 300.0, "sell": 500.0})
+    _recs = OTHER_HARDWARE.get("Call Scope AI Receptionist Setup (one-off)", {"buy": 69.0, "sell": 100.0})
+    _cs_cfgx = {"modules": [{k: v for k, v in m.items() if k != "qty"} for m in _cs_mods],
+                "minutes": {"buy_per_min": 0.0, "rrp_per_min": 0.0},
+                "setup": [{"id": "platform", "name": "Call Scope Platform Setup", "buy": float(_plat["buy"]), "rrp": float(_plat["sell"])},
+                          {"id": "rec_setup", "name": "AI Call Answer Setup", "buy": float(_recs["buy"]), "rrp": float(_recs["sell"])}],
+                "annual_review_pct": 0.0}
+    cs_quote = _csx.customer_quote(
+        _cs_cfgx, {m["id"]: m["qty"] for m in _cs_mods}, term=int(st.session_state.get("cs_term", 36) or 36),
+        discount=float(cs_disc_pct), style=("fixed" if str(st.session_state.get("cs_style", "")).startswith("Fixed") else "stepped"),
+        review_pct=0.0, setup_mode=("waived" if st.session_state.get("cs_setup_waive") else "invoice"))
+    for _l in cs_quote["lines"]:
+        if _l["name"] == "AI Receptionist":
+            _l["name"] = "AI Receptionist"
+    _crm_n = str(st.session_state.get("cs_crm_name", "") or "").strip()
+    if int(st.session_state.get("cs_AI Integration - CRM", 0) or 0) > 0:
+        if _crm_n:
+            cs_notes.append(("Customer's CRM", f"AI CRM Integration is set up for: {_crm_n}."))
+        else:
+            cs_crm_missing = True
+    if st.session_state.get("cs_ai_portal_free", False):
+        cs_notes.append(("Promotion: AI Portal first month free",
+                         "The first month of the AI Portal 500-minute bundle is free of charge."))
+cs_active = bool(cs_quote)
+
 if svc_disc_pct > 0 or bb_disc_pct > 0 or cs_disc_pct > 0:
     SW_ADDONS = [(n, q, c, round(sell * _svc_mult, 2)) for n, q, c, sell in SW_ADDONS]
     sw_sell_total = sum(qty * sell for _, qty, _, sell in SW_ADDONS if qty > 0)
@@ -6888,6 +7689,20 @@ with tab3:
                     data=_loa_only,
                     file_name=f"LetterOfAuthority_{safe_name}_{date.today()}.pdf",
                     mime="application/pdf", use_container_width=True, key="dl_loa_docs")
+        if cs_active:
+            st.markdown("---")
+            st.markdown("#### 🔮 Call Scope pack (separate agreement)")
+            st.caption("Call Scope has its own paperwork: Agreement to go ahead, Service Order, Price Schedule, Terms & Conditions and a Direct Debit mandate. "
+                       "It is not part of the telephony pack above.")
+            if cs_crm_missing:
+                st.warning("Enter the customer's CRM in the Call Scope card (AI CRM Integration) to produce this pack.")
+            else:
+                try:
+                    st.download_button(label=f"📥 Download Call Scope Pack - {comp_name}", data=build_callscope_pack(),
+                                       file_name=f"CallScope_{safe_name}_{date.today()}.pdf", mime="application/pdf",
+                                       use_container_width=True, key="dl_cs_pack_docs")
+                except Exception as _cse:
+                    st.error(f"Couldn't build the Call Scope pack: {_cse}")
         st.markdown("")
         st.markdown("---")
         st.markdown("#### 📋 One-Page Proposal")
@@ -7187,13 +8002,6 @@ with tab4:
                  padding:0.5rem 0.8rem;font-size:0.8rem;color:var(--good);margin-top:0.3rem">
               🎁 <strong>Broadband FREE for the first 12 months</strong><br>
               From month 13: £{total_mo:.2f}/mo (broadband £{_bb_full_sell:.2f}/mo resumes)
-            </div>""", unsafe_allow_html=True)
-        if st.session_state.get("cs_ai_portal_free", False):
-            st.markdown("""
-            <div style="background:rgba(52,211,153,.12);border-left:3px solid var(--good);border-radius:6px;
-                 padding:0.5rem 0.8rem;font-size:0.8rem;color:var(--good);margin-top:0.3rem">
-              🎁 <strong>AI Integration Portal — first month free</strong> (500 min bundle)<br>
-              <span style="font-size:0.75rem">From month 2: £25.00/mo (500 min bundle)</span>
             </div>""", unsafe_allow_html=True)
         st.markdown(f"""
         <div style="text-align:center;padding:0.5rem 0;font-size:0.8rem;color:var(--muted)">
@@ -8009,6 +8817,27 @@ with tab6:
             st.button("✅ Download Signed Pack", disabled=True,
                       use_container_width=True, key="dl_signed_dis")
 
+        if cs_active:
+            st.divider()
+            st.markdown("#### Call Scope pack (separate agreement)")
+            st.caption("Its own Agreement to go ahead, order, price schedule, Terms & Conditions and Direct Debit mandate - signed separately from the telephony pack.")
+            if cs_crm_missing:
+                st.warning("Enter the customer's CRM in the Call Scope card (AI CRM Integration) to produce this pack.")
+            else:
+                try:
+                    st.download_button("📥 Call Scope pack - blank signature (for Zoho Sign)", data=build_callscope_pack(),
+                                       file_name=f"CallScope_{safe}_{date.today()}.pdf", mime="application/pdf",
+                                       use_container_width=True, key="dl_cs_blank")
+                    if sig_bytes and sig_name:
+                        st.download_button("✅ Call Scope pack - signed now",
+                                           data=build_callscope_pack({"sig": sig_bytes, "name": sig_name, "date": date.today().strftime("%d/%m/%Y")}),
+                                           file_name=f"CallScope_{safe}_SIGNED_{date.today()}.pdf", mime="application/pdf",
+                                           use_container_width=True, type="primary", key="dl_cs_signed")
+                    else:
+                        st.caption("To sign it here instead, add the signature and name on the left.")
+                except Exception as _cse:
+                    st.error(f"Couldn't build the Call Scope pack: {_cse}")
+
         if AC["listed"]:
             st.divider()
             st.markdown("#### Step 3 - Shire Leasing hire agreement (air conditioning)")
@@ -8053,7 +8882,8 @@ with tab6:
     st.divider()
     st.markdown("### ✍️ Send via Zoho Sign")
     st.caption("Step 1: upload the Contract Information Sheet to Zoho Sign and send it for signature. "
-               "Step 2: once it is signed, upload the full pack (its 'Agreement to go ahead' box stays blank for Zoho Sign too).")
+               "Step 2: once it is signed, upload the full pack (its 'Agreement to go ahead' box stays blank for Zoho Sign too). "
+               "If Call Scope is on the deal, its separate pack is sent for signature on its own.")
     st.link_button("Open Zoho Sign →", "https://sign.zoho.eu", use_container_width=False)
 
 if _show_admin:
@@ -8472,7 +9302,7 @@ if _show_admin:
                     st.success("Call Scope minutes pricing saved"); st.rerun()
 
                 with st.expander("📜 Call Scope paperwork - branding & Terms and Conditions", expanded=False):
-                    st.caption("Used on the Call Scope Terms & Conditions added to the paperwork pack. When Call Scope becomes its own company, change the details here - "
+                    st.caption("Used on the separate Call Scope pack (Agreement, Service Order, Price Schedule, Terms & Conditions and Direct Debit mandate). When Call Scope becomes its own company, change the details here - "
                                "no code change needed. Leave a box empty to use the default.")
                     _cbr = st.session_state.active_config.get("callscope_brand", {}) or {}
                     _b1, _b2 = st.columns(2)
@@ -9073,8 +9903,36 @@ render_html(
     target=_hero_ph)
 
 # Live summary (customer-safe: no margins or commission)
+def _cs_summary_html():
+    q = cs_quote
+    _kst = 'style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"'
+    rows = "".join(f'<div class="pe-sum-row"><span class="k" {_kst}>{esc(l["name"].replace("AI CRM Integration", "AI CRM"))}'
+                   + (f' x{l["qty"]}' if l["qty"] > 1 else "")
+                   + f'</span><span class="v" style="flex:none">£{l["total"]:,.2f}/mo</span></div>' for l in q["lines"])
+    if q["setup"]:
+        rows += ('<div class="pe-sum-row"><span class="k">One-off set-up</span><span class="v">'
+                 + ("Waived" if q["setup_mode"] == "waived" else f'£{q["setup_total"]:,.2f}') + '</span></div>')
+    if q["discount"] > 0:
+        rows += f'<div class="pe-sum-row"><span class="k">Discount</span><span class="v">{q["discount"]:g}% ({q["style"]})</span></div>'
+    if q["years"] > 1 and q["discount"] > 0 and q["style"] == "stepped":
+        for r in q["schedule"]:
+            rows += f'<div class="pe-sum-row"><span class="k">Year {r["year"]}</span><span class="v">£{r["monthly"]:,.2f}/mo</span></div>'
+    chips = []
+    if cs_crm_missing:
+        chips.append(chip("Customer's CRM needed", "warn"))
+    if (st.session_state.get("current_user") or {}).get("role") == "admin":
+        chips.append(chip(f"Margin £{q['profit']:,.0f} over term", "accent"))
+    return (f'<div class="pe-sum-head"><div class="t">Call Scope summary</div>{chip(str(q["term"]) + " months", "accent")}</div>'
+            f'<div class="pe-sum-total"><div class="l">Call Scope monthly' + (" (year 1)" if q["discount"] > 0 and q["style"] == "stepped" and q["years"] > 1 else "")
+            + f'</div><div class="v">£{q["monthly_total"]:,.2f} <small>+ VAT</small></div></div>'
+            f'<div class="pe-sum-rows">{rows}</div>' + (f'<div class="pe-sum-foot">{"".join(chips)}</div>' if chips else "")
+            + '<div class="pe-sum-foot" style="opacity:.75;font-size:.72rem">Separate agreement - its own paperwork, terms and Direct Debit.</div>')
+
+
 with _sum_card:
-    if not (_has_hw or _has_svc):
+    if not (_has_hw or _has_svc) and cs_active:
+        render_html(_cs_summary_html())
+    elif not (_has_hw or _has_svc):
         render_html(
             '<div class="pe-empty"><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" '
             'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
@@ -9117,6 +9975,9 @@ with _sum_card:
             + "".join(f'<div class="pe-sum-row"><span class="k">{k}</span><span class="v">{v}</span></div>'
                       for k, v in _rows)
             + '</div>' + (f'<div class="pe-sum-foot">{"".join(_chips)}</div>' if _chips else ""))
+        if cs_active:
+            st.markdown("<div style='height:.8rem'></div>", unsafe_allow_html=True)
+            render_html(_cs_summary_html())
 
 with st.sidebar:
     st.markdown("")
