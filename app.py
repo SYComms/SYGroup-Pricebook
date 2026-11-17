@@ -2147,6 +2147,7 @@ with st.sidebar:
                     placeholder="Using calculated rental",
                     help="Type the monthly air-conditioning rental you want to quote. Leave empty to use the calculated rental.")
     _ac_units_ph = st.container(key="ac_units_caption")
+    _tot_units_ph = st.container(key="total_units_caption")
 
     st.markdown("### 🔒 Deal Adjustments (Internal Only)")
     termination_lease = st.number_input(
@@ -10802,6 +10803,18 @@ with _ac_units_ph:
         st.caption(f"{'Target' if _ac_t else 'Calculated'}: £{(ac_quote['cash_price'] if ac_quote['is_cash'] else ac_quote['rental']):,.2f}{'' if ac_quote['is_cash'] else '/mo'}  ·  {_acu:.2f} units")
     else:
         st.caption("Pick air conditioning to use this.")
+with _tot_units_ph:
+    _tu = float(commission_units or 0)
+    _tparts = [f"Telephony {_tu:.2f}"]
+    if cs_active:
+        _cu = float(cs_quote.get("profit", 0) or 0) / float(commission_unit_size or 4000)
+        _tu += _cu; _tparts.append(f"Call Scope {_cu:.2f}")
+    if ac_active:
+        _au = (ac_quote["cash_gp"] if ac_quote["is_cash"] else ac_quote["gp"]) / float(commission_unit_size or 4000)
+        _tu += _au; _tparts.append(f"Air con {_au:.2f}")
+    st.markdown(f"**Total units: {_tu:.2f}**")
+    if len(_tparts) > 1:
+        st.caption("  ·  ".join(_tparts))
 try:
     _n_handsets = sum(desktop_quantities.values()) + sum(q for n, q in cordless_quantities.items() if _is_user_handset(n))
     _n_hw = (_n_handsets + sum(headset_quantities.values())
