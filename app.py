@@ -7642,7 +7642,7 @@ def compute_hw_buy():
             total += ROUTERS[router_type]
     return total
 
-_CP_KEYS = ("lic", "bb1", "cs", "ac", "accash", "hw", "inst", "bbinst", "desk", "cord", "hs", "other", "switch", "router")
+_CP_KEYS = ("lic", "bb1", "sysrent", "cs", "ac", "accash", "hw", "inst", "bbinst", "desk", "cord", "hs", "other", "switch", "router")
 
 def _cp_saved():
     """Saved manager overrides of what the customer is charged (Admin - Per-Deal Overrides - Customer prices)."""
@@ -8009,7 +8009,7 @@ if svc_disc_pct > 0 or bb_disc_pct > 0 or cs_disc_pct > 0:
 # ── Manager overrides of the customer's monthly prices (Admin - Per-Deal Overrides - Customer prices) ──
 # Applied to the list total as well as the final one, so an override never counts as a "discount" against commission.
 _cp = _cp_saved()
-_cp_auto = {"lic": float(svc["lic_monthly"]), "bb1": float(svc["bb1_sell"]), "cs": float(cs_auto_monthly),
+_cp_auto = {"sysrent": 0.0, "lic": float(svc["lic_monthly"]), "bb1": float(svc["bb1_sell"]), "cs": float(cs_auto_monthly),
             "ac": float(ac_quote["calc_rental"]) if ac_quote else 0.0, "accash": float(ac_quote["cash_list"]) if ac_quote else 0.0}
 _cp_delta = 0.0
 if _cp.get("lic") is not None:
@@ -8062,10 +8062,22 @@ base_rental   = pl_data["rental"]      # the calculated lease rental (floor/refe
 st.session_state["_prev_base_rental"] = round(base_rental, 2)
 true_rate     = pl_data["true_rate"]
 
+_cp_auto["sysrent"] = float(hw_monthly_spread) if is_inhouse else float(base_rental)
 # Read consultant's desired rental from session state (default = calculated rental)
-_desired_rental = st.session_state.get("c_desired_rental", 0.0)
-if _desired_rental <= 0 or is_inhouse:
-    _desired_rental = base_rental      # default to calculated if not set (an in-house system rental is price / term, so a lease target can't apply)
+# The rental the customer is quoted: the manager's "what the customer pays" figure wins, then the consultant's target, else the calculated rental.
+_sr_ov      = _cp_saved().get("sysrent")
+_eff_target = float(_sr_ov) if _sr_ov is not None else float(st.session_state.get("c_desired_rental", 0.0) or 0.0)
+_inhouse_calc = hw_monthly_spread if is_inhouse else 0.0       # in-house system rental as calculated: price / term
+if is_inhouse:
+    base_rental = _inhouse_calc                                  # the reference for an in-house deal is its own calculated system rental
+    if _eff_target > 0:
+        hw_monthly_spread = round(_eff_target, 2)
+        total_mo          = svc["total_sell"] + hw_monthly_spread
+    _desired_rental = hw_monthly_spread
+else:
+    _desired_rental = _eff_target
+    if _desired_rental <= 0:
+        _desired_rental = base_rental      # default to calculated if not set
 
 # Recalculate GP and commission from desired rental
 # Formula: disc_turnover = (desired_rental / true_rate) × 1000
@@ -8078,7 +8090,7 @@ _desired_disc_turnover = (_desired_rental / true_rate) * 1000 if true_rate > 0 e
 # The buyout then comes straight off lease profit.
 _buyout_rental_share   = (pl_data["sales_rate"] / 1000.0) * termination_cost
 _calc_rental_ex_buyout = (pl_data["sales_rate"] / 1000.0) * max(0.0, pl_data["sub_total"] - termination_cost)
-_target_active         = (st.session_state.get("c_desired_rental", 0) or 0) > 0 and abs(_desired_rental - base_rental) > 0.01
+_target_active         = _eff_target > 0 and abs(_desired_rental - base_rental) > 0.01
 # Value for the max = equipment rental, plus any rental ABOVE what is needed to cover the buyout.
 # Continuous: at the pricebook rental it equals the equipment-only rental; a target below the
 # buyout-covering rental gives the same; every pound above that raises the max.
@@ -8089,6 +8101,8 @@ if _target_active:
 _buyout_funding        = max(0.0, _desired_rental - _lv_rental)       # rental that funds the buyout (info only)
 # Profit counts ALL the funder money; cos_full already contains the buyout, so it comes off once.
 _profit_disc_turnover  = (_desired_rental / true_rate) * 1000 if true_rate > 0 else 0
+if is_inhouse:
+    _profit_disc_turnover = hw_monthly_spread * lease_term     # in-house: no funder - the customer pays the system rental to us over the term
 _adjusted_gp           = _profit_disc_turnover - pl_data["cos_full"]
 _gp_before_buyout      = _adjusted_gp + termination_cost
 # Lease value = what the funder pays for the lease at the rental in the deal (incl. any target rental);
@@ -9266,7 +9280,8 @@ with tab5:
         # ── Desired Rental adjustment ─────────────────────────────────
         st.markdown("### 🎯 Lease Rental Adjustment")
         if is_inhouse:
-            st.info("In-house System Rental: the monthly rental is the upfront price divided by the term, so the lease rental adjustment below does not apply to this deal.")
+            st.info(f"In-house System Rental: the calculated monthly rental is the upfront price divided by the term (£{_inhouse_calc:,.2f}). "
+                    "Set the rental you want below and it becomes what the customer pays; profit is the rental over the term less our costs, so it can go negative.")
         st.caption("Adjust the hardware lease rental. "
                    "Increasing earns more commission. Decreasing discounts the deal (reduces commission). "
                    "Commission is calculated only on the lease amount, not total monthly.")
@@ -10197,6 +10212,10 @@ if _show_admin:
                     with m2:
                         st.number_input(f"Broadband, main line (£/mo) - now £{_cp_auto['bb1']:,.2f}", min_value=0.0, step=1.0,
                                         value=_sv.get("bb1"), key="cpf_bb1", format="%.2f")
+                    if is_spread:
+                        st.number_input(f"{'System rental' if is_inhouse else 'Hardware rental'} (£/mo) - now £{_cp_auto.get('sysrent', 0):,.2f}",
+                                        min_value=0.0, step=1.0, value=_sv.get("sysrent"), key="cpf_sysrent", format="%.2f",
+                                        help="What the customer pays each month for the hardware. Beats the consultant's target. Profit and commission follow it - even if it makes a loss.")
                     if cs_active or ac_active:
                         st.markdown("**Call Scope and air conditioning (their own agreements)**")
                         x1, x2 = st.columns(2)
@@ -11059,7 +11078,7 @@ if _show_dash:
         _svc_margin_pm  = _svc_sell_pm - _svc_cost_pm
         _svc_profit_term = round(_svc_margin_pm * lease_term, 2)
         _total_gp        = round(_adjusted_gp + _svc_profit_term + printer_lease_profit, 2)
-        _lp_is_target    = (st.session_state.get("c_desired_rental", 0) or 0) > 0 and abs(_desired_rental - base_rental) > 0.01
+        _lp_is_target    = _eff_target > 0 and abs(_desired_rental - base_rental) > 0.01
         # Lease value + maximum termination
         lv1, lv2 = st.columns(2)
         with lv1:
@@ -11197,11 +11216,12 @@ if _show_dash:
 # ─── END OF RUN: hero, live summary, sign out ───────────────────────────────
 # Sidebar rental + units: exactly the numbers used in the Consultant view
 with _units_ph:
-    _is_override = (st.session_state.get("c_desired_rental", 0) or 0) > 0 and abs(_desired_rental - base_rental) > 0.01
+    _is_override = _eff_target > 0 and abs(_desired_rental - base_rental) > 0.01
     _disc_note = f"  ·  after discount" if (svc_disc_pct + bb_disc_pct + cs_disc_pct) > 0 else ""
     if is_inhouse:
-        st.caption(f"System rental: £{hw_monthly_spread:,.2f}/mo (price ÷ term)  ·  {commission_units:.2f} units{_disc_note}")
-        st.caption(":orange[In-house system rental: the target rental above does not apply to this deal. To lower the bill, use the discount sliders, or switch the payment model to Lease.]")
+        st.caption(f"{'Override' if _is_override else 'Calculated'} system rental: £{hw_monthly_spread:,.2f}/mo  ·  {commission_units:.2f} units{_disc_note}")
+        if _sr_ov is not None:
+            st.caption(":orange[An admin price is set for this deal (Admin - Per-Deal Overrides).]")
     else:
         st.caption(f"{'Override' if _is_override else 'Calculated'}: £{_desired_rental:,.2f}/mo  ·  "
                    f"{commission_units:.2f} units{_disc_note}")
@@ -11355,7 +11375,7 @@ with _sum_card:
                               else chip(f"£{abs(_diff) / 30.44:,.2f}/day investment", "accent"))
         except Exception:
             pass
-        if st.session_state.get("c_desired_rental", 0) > 0:
+        if _eff_target > 0:
             _chips.append(chip("Rental adjusted", "warn"))
         render_html(
             f'<div class="pe-sum-head"><div class="t">Telephony summary</div>{chip(_term_lbl, "accent")}</div>'
