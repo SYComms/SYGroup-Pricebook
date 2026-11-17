@@ -8064,8 +8064,8 @@ true_rate     = pl_data["true_rate"]
 
 # Read consultant's desired rental from session state (default = calculated rental)
 _desired_rental = st.session_state.get("c_desired_rental", 0.0)
-if _desired_rental <= 0:
-    _desired_rental = base_rental      # default to calculated if not set
+if _desired_rental <= 0 or is_inhouse:
+    _desired_rental = base_rental      # default to calculated if not set (an in-house system rental is price / term, so a lease target can't apply)
 
 # Recalculate GP and commission from desired rental
 # Formula: disc_turnover = (desired_rental / true_rate) × 1000
@@ -11199,8 +11199,12 @@ if _show_dash:
 with _units_ph:
     _is_override = (st.session_state.get("c_desired_rental", 0) or 0) > 0 and abs(_desired_rental - base_rental) > 0.01
     _disc_note = f"  ·  after discount" if (svc_disc_pct + bb_disc_pct + cs_disc_pct) > 0 else ""
-    st.caption(f"{'Override' if _is_override else 'Calculated'}: £{_desired_rental:,.2f}/mo  ·  "
-               f"{commission_units:.2f} units{_disc_note}")
+    if is_inhouse:
+        st.caption(f"System rental: £{hw_monthly_spread:,.2f}/mo (price ÷ term)  ·  {commission_units:.2f} units{_disc_note}")
+        st.caption(":orange[In-house system rental: the target rental above does not apply to this deal. To lower the bill, use the discount sliders, or switch the payment model to Lease.]")
+    else:
+        st.caption(f"{'Override' if _is_override else 'Calculated'}: £{_desired_rental:,.2f}/mo  ·  "
+                   f"{commission_units:.2f} units{_disc_note}")
     if is_lease and lease_value > 0:
         st.caption(f"Max termination: £{max_termination:,.0f}")
         if termination_over:
