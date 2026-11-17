@@ -2929,14 +2929,14 @@ def ac_build_shire(sign=None):
                     pass
     ovr = PdfReader(io.BytesIO(bytes(ov.output())))
     wr = PdfWriter()
-    for i, pg in enumerate(rd.pages):
+    for i, src_pg in enumerate(rd.pages):
+        pg = wr.add_page(src_pg)          # attach the page to the writer first (newer pypdf requires this before merging)
         keep = [a for a in (pg.get("/Annots") or []) if a.get_object().get("/Subtype") != "/Widget"]      # drop the fillable boxes (and their old sample text)
         if keep:
             pg[NameObject("/Annots")] = ArrayObject(keep)
         elif "/Annots" in pg:
             del pg["/Annots"]
         pg.merge_page(ovr.pages[i])
-        wr.add_page(pg)
     out = io.BytesIO(); wr.write(out)
     return out.getvalue()
 
