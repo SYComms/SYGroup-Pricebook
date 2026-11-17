@@ -4148,7 +4148,7 @@ def build_proposal_pdf(sign=None, cis=False):
                      else f"{gbp(ac_quote['rental'])}/mo over {ac_quote['term']} months (excl. VAT)"))
         return c
 
-    def _agree_box(sign, intro, covers=None):
+    def _agree_box(sign, intro, covers=None, title="Agreement to proceed", tag="STEP 2 OF 2  -  FULL PAPERWORK PACK", sig_label="Customer signature - agreeing to proceed"):
         covers = covers or []
         ay_ = p.get_y()
         ah_ = 44 if not covers else 50 + 4.6 * len(covers)
@@ -4159,7 +4159,10 @@ def build_proposal_pdf(sign=None, cis=False):
                 ay_ = PH - 18 - ah_
         card(M, ay_, CW, ah_, fill=SURF2, border=ACC, r=4)
         p.set_xy(M + 8, ay_ + 4); p.set_font("Helvetica", "B", 12); p.set_text_color(*TEXT)
-        p.cell(CW - 16, 6, "Agreement to proceed")
+        p.cell(CW - 16, 6, _ps(title))
+        if tag:
+            p.set_xy(M + 8, ay_ + 5.2); p.set_font("Helvetica", "B", 6.4); p.set_text_color(*ACC2)
+            p.set_char_spacing(0.8); p.cell(CW - 16, 4, _ps(tag), align="R"); p.set_char_spacing(0)
         p.set_xy(M + 8, ay_ + 10.5); p.set_font("Helvetica", "", 7.8); p.set_text_color(*MUTED)
         p.multi_cell(CW - 16, 3.8, _ps(intro), align="L")
         by_ = ay_ + 22
@@ -4186,7 +4189,7 @@ def build_proposal_pdf(sign=None, cis=False):
             p.set_draw_color(120, 128, 150); p.set_line_width(0.3)
             p.line(M + 12, by_ + 13, M + 82, by_ + 13)
         p.set_font("Helvetica", "", 7); p.set_text_color(*MUTED)
-        p.set_xy(M + 8, by_ + 17.5); p.cell(78, 4, "Customer signature")
+        p.set_xy(M + 8, by_ + 17.5); p.cell(CW - 16, 4, _ps(sig_label))
         p.set_font("Helvetica", "B", 8.5); p.set_text_color(*TEXT)
         p.set_xy(M + 92, by_ + 1.5); p.cell(CW - 100, 5, _ps(f"Name: {sign.get('name') or ''}"))
         p.set_xy(M + 92, by_ + 7.5); p.cell(CW - 100, 5, _ps(f"Company: {sign.get('company') or comp_name or ''}"))
@@ -4266,8 +4269,11 @@ def build_proposal_pdf(sign=None, cis=False):
                                            + (("System rental does not change. " if is_inhouse else "Hardware rental under your lease does not change. ") if is_spread else "")
                                            + "The full year-by-year schedule is on the Annual Price Review page of your paperwork."), align="L")
             p.set_y(_cy + 23)
-        _agree_box(sign or {}, f"I confirm that I have read and understood the term and costings above, and would like {_CO} to proceed. "
-                               "The full paperwork (Order Form, Network Services & Broadband Agreement and Terms & Conditions) will follow for signature.")
+        _agree_box(sign or {}, "I confirm that I have read and understood the contract term and costings above, and I accept them. "
+                               "This is not the final agreement: the full paperwork (Order Form, Network Services & Broadband Agreement and Terms & Conditions) "
+                               "follows, with its own Agreement to proceed.",
+                   title="Acceptance of contract terms", tag="STEP 1 OF 2  -  CONTRACT INFORMATION SHEET",
+                   sig_label="Customer signature - accepting the term and costings")
         return bytes(p.output())
 
     if sign is not None:
@@ -9726,7 +9732,7 @@ with tab6:
 
         # ══ STEP 1 - Contract Information Sheet ══════════════════════════════
         st.markdown("#### Step 1 - Contract Information Sheet")
-        st.caption("The first document: contract term and costings with an 'Agreement to proceed' box. "
+        st.caption("The first document: contract term and costings with an 'Acceptance of contract terms' box (the full pack has its own, separate 'Agreement to proceed'). "
                    "Get this signed first, then move on to Step 2.")
         _cis_blank = build_proposal_pdf(sign={"sig_bytes": None, "name": sig_name or "", "company": comp_name or "", "timestamp": ""}, cis=True)
         st.download_button(
