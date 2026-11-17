@@ -746,7 +746,7 @@ _QUOTE_EXCLUDE = {
     "q_sidebar_rental",                                     # display copy of the target rental (restored via sync)
     "cs_svc_apply", "cs_update", "sec_apply",               # buttons - can't be restored
     "cs_buy_input", "cs_sell_input",                        # admin catalogue price editors, not deal data
-    "ac_clear_btn",
+    "ac_clear_btn", "cs_target_box", "ac_target_box",   # the typing boxes - the applied figure is what's saved
 }
 
 def quote_snapshot():
@@ -1123,6 +1123,8 @@ if "_pending_quote" in st.session_state:
     # Target rental: push the loaded figure into both rental boxes (sidebar + consultant view)
     st.session_state["_sync_rental_to_sidebar"] = True
     st.session_state["_sync_rental_to_cons"]    = True
+    st.session_state["_sync_cs_box"] = True
+    st.session_state["_sync_ac_box"] = True
     # Keep the loaded router choice (don't treat the provider change as a reason to reset it)
     st.session_state["_prev_bb_provider"] = st.session_state.get("q_bb_provider", "None / Customer Supplied")
     st.session_state["_quote_ready"] = False
@@ -2144,15 +2146,32 @@ with st.sidebar:
     # Units caption is filled in at the END of the run, from the same final figure the
     # Consultant view shows (after any services discount), so the two always match.
     _units_ph = st.container(key="units_caption")
-    st.markdown("**Call Scope target rental**")
-    st.number_input("Call Scope target (£/mo)", min_value=0.0, value=None, step=5.0, key="cs_target_rental",
-                    placeholder="Using standard / discounted price",
-                    help="Type the monthly Call Scope price you want to quote. The discount is worked out for you (up to 80%). Leave empty to use the discount slider.")
+    def _target_box(title, label, box_key, applied_key, step, ph, help_txt, tag):
+        st.markdown(f"**{title}**")
+        if st.session_state.pop(f"_sync_{tag}_box", False) or box_key not in st.session_state:
+            _ap = float(st.session_state.get(applied_key) or 0.0)
+            st.session_state[box_key] = _ap if _ap > 0 else None
+        _v = st.number_input(label, min_value=0.0, value=None, step=step, key=box_key, placeholder=ph, help=help_txt)
+        def _do_apply(_bk=box_key, _ak=applied_key):
+            st.session_state[_ak] = float(st.session_state.get(_bk) or 0.0)
+        def _do_clear(_bk=box_key, _ak=applied_key):
+            st.session_state[_ak] = 0.0
+            st.session_state[_bk] = None
+        _c1, _c2 = st.columns(2)
+        with _c1:
+            st.button("✅ Apply", key=f"btn_apply_{tag}", use_container_width=True, on_click=_do_apply)
+        with _c2:
+            st.button("✖ Clear", key=f"btn_clear_{tag}", use_container_width=True, on_click=_do_clear)
+        if float(_v or 0.0) != float(st.session_state.get(applied_key) or 0.0):
+            st.caption(":orange[Not applied yet - press Apply (or Clear to go back to the calculated price).]")
+
+    _target_box("Call Scope target rental", "Call Scope target (£/mo)", "cs_target_box", "cs_target_rental", 5.0,
+                "Using standard / discounted price",
+                "Type the monthly Call Scope price you want, then press Apply. The discount is worked out for you (up to 80%). Clear goes back to the discount slider.", "cs")
     _cs_units_ph = st.container(key="cs_units_caption")
-    st.markdown("**Air conditioning target rental**")
-    st.number_input("Air conditioning target (£/mo)", min_value=0.0, value=None, step=5.0, key="ac_desired_rental",
-                    placeholder="Using calculated rental",
-                    help="Type the monthly air-conditioning rental you want to quote. Leave empty to use the calculated rental.")
+    _target_box("Air conditioning target rental", "Air conditioning target (£/mo)", "ac_target_box", "ac_desired_rental", 5.0,
+                "Using calculated rental",
+                "Type the monthly air-conditioning rental you want, then press Apply. Clear goes back to the calculated rental.", "ac")
     _ac_units_ph = st.container(key="ac_units_caption")
     _tot_units_ph = st.container(key="total_units_caption")
 
