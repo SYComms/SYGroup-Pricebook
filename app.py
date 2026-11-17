@@ -166,8 +166,8 @@ html,body,[class*="css"],.stApp,button,input,textarea,select{font-family:'Inter'
 [data-testid="stSidebar"] h3{font-size:.78rem!important;font-weight:700!important;letter-spacing:.08em;text-transform:uppercase;color:var(--accent-2)!important;border-bottom:1px solid var(--border);padding-bottom:.4rem;margin-top:1.1rem!important}
 [data-testid="stWidgetLabel"] p{font-size:.76rem!important;font-weight:600!important;color:var(--muted)!important;text-transform:uppercase;letter-spacing:.06em}
 [data-testid="stCaptionContainer"]{color:var(--muted)!important}
-.st-key-card-login,.st-key-card-hardware,.st-key-card-quote,.st-key-card-summary{background:linear-gradient(180deg,rgba(22,31,51,.85) 0%,rgba(17,24,39,.85) 100%);border:1px solid var(--border)!important;border-radius:var(--radius);padding:22px 22px 18px;box-shadow:0 1px 0 rgba(255,255,255,.03) inset,0 20px 40px -24px rgba(0,0,0,.6);margin-bottom:18px}
-.st-key-card-summary{border-top:2px solid var(--accent)!important}
+.st-key-card-login,.st-key-card-hardware,.st-key-card-quote,.st-key-card-summary,.st-key-card-summary-cs{background:linear-gradient(180deg,rgba(22,31,51,.85) 0%,rgba(17,24,39,.85) 100%);border:1px solid var(--border)!important;border-radius:var(--radius);padding:22px 22px 18px;box-shadow:0 1px 0 rgba(255,255,255,.03) inset,0 20px 40px -24px rgba(0,0,0,.6);margin-bottom:18px}
+.st-key-card-summary,.st-key-card-summary-cs{border-top:2px solid var(--accent)!important}
 [data-testid="stColumn"]:has(.st-key-card-summary){position:sticky;top:1rem;align-self:flex-start}
 [data-baseweb="input"],[data-baseweb="select"]>div,[data-baseweb="textarea"]{background:var(--surface)!important;border:1px solid var(--border-strong)!important;border-radius:10px!important}
 [data-baseweb="input"]:focus-within,[data-baseweb="select"]>div:focus-within,[data-baseweb="textarea"]:focus-within{border-color:var(--accent)!important;box-shadow:0 0 0 3px var(--accent-soft)!important}
@@ -2807,6 +2807,7 @@ with _hw_card:
     col_hw1, col_hw2 = st.columns([3, 2])
 with _sum_col:
     _sum_card = st.container(key="card-summary")
+    _sum_card_cs = st.container(key="card-summary-cs")      # Call Scope gets its own card under the telephony one
 
 # ─── SYSTEM HARDWARE BUILDER ─────────────────────────────────────────────────
 with col_hw1:
@@ -5779,8 +5780,10 @@ def _embed_sig(pdf_obj, sig_bytes, x=15, w=65, h=20,
 
 # ─── CALL SCOPE PAPERWORK (own branding, price schedule, editable Terms & Conditions) ─────────────────────
 _CS_BRAND_DEFAULT = {
-    "trading": "Call Scope", "byline": "by SY Comms", "legal": "", "address": "", "email": "", "phone": "",
-    "website": "callscope.sycomms.cloud", "accent": "#7870E8", "navy": "#101938",
+    "trading": "Call Scope", "byline": "", "legal": "Call Scope Ltd",
+    "address": "Suite C Jupiter House, Sitka Drive, Shrewsbury Business Park, Shrewsbury SY2 6LG",
+    "email": "hello@callscope.co.uk", "phone": "",
+    "website": "callscope.co.uk", "accent": "#7870E8", "navy": "#101938",
     "tag": "Every conversation. More intelligence.", "logo_b64": "",
 }
 
@@ -6033,7 +6036,7 @@ class Doc(FPDF):
         B = self.B
         self.set_y(-14)
         self.set_font("Helvetica", "", 7); self.set_text_color(*MUTE)
-        bits = [f"{B['trading']} {B.get('byline', '')}".strip(), B.get("legal", ""), "All figures exclude VAT", "Confidential"]
+        bits = [f"{B['trading']} {B.get('byline', '')}".strip(), B.get("legal", ""), B.get("email", ""), B.get("website", ""), "All figures exclude VAT", "Confidential"]
         self.cell(0, 4, s("  |  ".join(b for b in bits if b)), align="C", new_x="LMARGIN", new_y="NEXT")
         self.cell(0, 4, f"Page {self.page_no()} of {{nb}}", align="C")
 
@@ -6484,10 +6487,10 @@ exec(compile(_CSX_SRC, "csx_embedded", "exec"), _csx.__dict__)
 def cs_brand():
     b = dict(_CS_BRAND_DEFAULT)
     b.update({k: v for k, v in (st.session_state.active_config.get("callscope_brand") or {}).items() if v})
-    b["legal"]   = b["legal"]   or _CO_LEGAL
-    b["address"] = b["address"] or _BRAND.get("address", "")
-    b["email"]   = b["email"]   or _BRAND.get("email", "")
-    b["phone"]   = b["phone"]   or _BRAND.get("phone", "")
+    for _k in ("legal", "address", "email", "website"):       # an empty box in Admin falls back to the Call Scope Ltd details
+        b[_k] = b[_k] or _CS_BRAND_DEFAULT[_k]
+    if "sycomms.cloud" in str(b.get("website", "")):          # old saved website -> the new one
+        b["website"] = _CS_BRAND_DEFAULT["website"]
     return b
 
 
@@ -6529,6 +6532,18 @@ def cs_terms_list(term_months=None):
             txt = [t.replace(k, v) for t in txt]
         res.append((h, txt))
     return res
+
+
+def merge_pdfs(*parts):
+    """Join PDFs end to end (telephony pack first, then Call Scope)."""
+    from pypdf import PdfReader, PdfWriter
+    w = PdfWriter()
+    for src in parts:
+        if src:
+            for pg in PdfReader(io.BytesIO(src)).pages:
+                w.add_page(pg)
+    out = io.BytesIO(); w.write(out)
+    return out.getvalue()
 
 
 _CS_PRICE_NOTE = ("Call Scope sets its own prices. The charges are fixed for the first 12 months; after that they may be increased on at least "
@@ -7138,6 +7153,8 @@ if cs_order_rows:
         cs_notes.append(("Promotion: AI Portal first month free",
                          "The first month of the AI Portal 500-minute bundle is free of charge."))
 cs_active = bool(cs_quote)
+_tele_any = bool(desktop_quantities or cordless_quantities or headset_quantities or other_quantities
+                 or standalone_softphones > 0 or float(svc["total_sell"]) > 0)
 
 if svc_disc_pct > 0 or bb_disc_pct > 0 or cs_disc_pct > 0:
     SW_ADDONS = [(n, q, c, round(sell * _svc_mult, 2)) for n, q, c, sell in SW_ADDONS]
@@ -7703,6 +7720,14 @@ with tab3:
                                        use_container_width=True, key="dl_cs_pack_docs")
                 except Exception as _cse:
                     st.error(f"Couldn't build the Call Scope pack: {_cse}")
+        if cs_active and _tele_any and not cs_crm_missing:
+            try:
+                st.download_button(label=f"📦 Download COMBINED pack (Telephony + Call Scope) - {comp_name}",
+                                   data=merge_pdfs(pdf_bytes, build_callscope_pack()),
+                                   file_name=f"SYComms_CallScope_Combined_{safe_name}_{date.today()}.pdf", mime="application/pdf",
+                                   use_container_width=True, key="dl_combined_docs")
+            except Exception as _cse:
+                st.error(f"Couldn't build the combined pack: {_cse}")
         st.markdown("")
         st.markdown("---")
         st.markdown("#### 📋 One-Page Proposal")
@@ -7729,7 +7754,8 @@ with tab4:
     """, unsafe_allow_html=True)
 
     if not (desktop_quantities or cordless_quantities or headset_quantities or other_quantities or standalone_softphones > 0):
-        st.info("👈 Select hardware from the builder above to populate this view.")
+        if not cs_active:
+            st.info("👈 Select hardware from the builder above to populate this view.")
     else:
         # ── Selected Hardware ──────────────────────────────────────────────────
         st.markdown('<div class="cv-section">📦 Your New System</div>', unsafe_allow_html=True)
@@ -8017,6 +8043,67 @@ with tab4:
         """, unsafe_allow_html=True)
 
 
+
+    # ── Call Scope package (its own agreement, so its own section) ──
+    if cs_active:
+        _q = cs_quote
+        _cb = cs_brand()
+        st.markdown(f"""
+        <div class="cv-header" style="margin-top:2rem">
+          <h2>Your {esc(_cb['trading'])} Package</h2>
+          <p>{'Prepared for: ' + esc(comp_name) if comp_name else 'Complete the customer details in the sidebar'} &nbsp;|&nbsp; {_q['term']} month agreement &nbsp;|&nbsp; provided by {esc(_cb['legal'])}</p>
+        </div>
+        """, unsafe_allow_html=True)
+        st.markdown('<div class="cv-section">🔮 Your Call Scope Services</div>', unsafe_allow_html=True)
+        _cs_cards = [(l["name"], l["qty"]) for l in _q["lines"] if "mins" not in l["name"] or l["qty"] > 1 or True]
+        for _rs in range(0, len(_cs_cards), 4):
+            _cc = st.columns(4)
+            for _col, (_n, _qt) in zip(_cc, _cs_cards[_rs:_rs + 4]):
+                with _col:
+                    _b64, _ext = get_product_image_b64("Call Scope " + _n)
+                    if _b64:
+                        _img = f'<img src="data:image/{_ext};base64,{_b64}" style="width:100%;height:100px;object-fit:contain;border-radius:8px;">'
+                    else:
+                        _img = '<div style="height:100px;display:flex;align-items:center;justify-content:center;font-size:2rem">🔮</div>'
+                    st.markdown(f"""
+                    <div class="cv-hw-card">
+                      {_img}
+                      <div class="cv-hw-name">{esc(_n)}</div>
+                      <div class="cv-hw-qty">Qty: {_qt}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+        st.markdown(f"""
+        <div style="margin-top:0.75rem;padding:0.6rem 1rem;background:var(--surface-2);border-radius:8px;font-size:0.82rem;color:var(--muted)">
+          {_q['term']} month agreement &nbsp;&middot;&nbsp; billed monthly in advance &nbsp;&middot;&nbsp; its own paperwork, terms and Direct Debit
+        </div>
+        """, unsafe_allow_html=True)
+        st.markdown("")
+        _csl = []
+        for _l in _q["lines"]:
+            _csl.append((f"{_l['name']}" + (f" x{_l['qty']}" if _l["qty"] > 1 else ""), f"£{_l['total']:.2f}/mo"))
+        if _q["discount"] > 0:
+            _csl.append((f"Includes {_q['discount']:g}% discount on the standard price", ""))
+        for _r in _q["schedule"] if (_q["discount"] > 0 and _q["style"] == "stepped" and _q["years"] > 1) else []:
+            _csl.append((f"Year {_r['year']} (months {_r['months']})", f"£{_r['monthly']:.2f}/mo"))
+        for _s in _q["setup"]:
+            _csl.append((f"{_s['name']} x{_s['qty']} (one-off)" if _s["qty"] > 1 else f"{_s['name']} (one-off)",
+                         "Waived" if _q["setup_mode"] == "waived" else f"£{_s['total']:.2f}"))
+        st.markdown('<div class="cv-section">🌐 Your Call Scope Charges</div>', unsafe_allow_html=True)
+        for _label, _val in _csl:
+            st.markdown(f"""
+            <div class="cv-price-row">
+              <span class="cv-price-label">{esc(_label)}</span>
+              <span class="cv-price-val">{_val}</span>
+            </div>""", unsafe_allow_html=True)
+        st.markdown(f"""
+        <div style="margin-top:1rem;padding:1rem 1.4rem;background:var(--surface-2);border-radius:10px;border-left:4px solid var(--accent)">
+          <div style="font-size:0.8rem;color:var(--accent);font-weight:700;text-transform:uppercase;letter-spacing:.06em">Call Scope monthly</div>
+          <div style="font-size:1.8rem;font-weight:800;color:var(--text)">£{_q['monthly_total']:,.2f} <span style="font-size:0.9rem;color:var(--muted)">+ VAT</span></div>
+        </div>
+        <div style="margin-top:1rem;padding:0.8rem 1rem;background:var(--surface-2);border-radius:8px;font-size:0.82rem;color:var(--muted);text-align:center">
+          All figures exclude VAT.<br>{esc(_cb['legal'])} provides Call Scope under its own agreement.
+        </div>
+        """, unsafe_allow_html=True)
 
 
 # ── TAB 5: CONSULTANT VIEW ──────────────────────────────────────────────────
@@ -8835,6 +8922,19 @@ with tab6:
                                            use_container_width=True, type="primary", key="dl_cs_signed")
                     else:
                         st.caption("To sign it here instead, add the signature and name on the left.")
+                    if _tele_any:
+                        st.markdown("**Combined pack - telephony + Call Scope in one file**")
+                        st.download_button("📦 Combined pack - blank signature boxes (for Zoho Sign)",
+                                           data=merge_pdfs(_unsigned_bytes, build_callscope_pack()),
+                                           file_name=f"SYComms_CallScope_Combined_{safe}_{date.today()}.pdf", mime="application/pdf",
+                                           use_container_width=True, key="dl_comb_blank")
+                        if sig_bytes and sig_name and _cis_done:
+                            st.download_button("✅ Combined pack - signed now",
+                                               data=merge_pdfs(_signed_bytes, build_callscope_pack({"sig": sig_bytes, "name": sig_name, "date": date.today().strftime("%d/%m/%Y")})),
+                                               file_name=f"SYComms_CallScope_Combined_{safe}_SIGNED_{date.today()}.pdf", mime="application/pdf",
+                                               use_container_width=True, type="primary", key="dl_comb_signed")
+                        else:
+                            st.caption("The signed combined pack unlocks once Step 1 is ticked and the signature and name are added.")
                 except Exception as _cse:
                     st.error(f"Couldn't build the Call Scope pack: {_cse}")
 
@@ -9302,7 +9402,7 @@ if _show_admin:
                     st.success("Call Scope minutes pricing saved"); st.rerun()
 
                 with st.expander("📜 Call Scope paperwork - branding & Terms and Conditions", expanded=False):
-                    st.caption("Used on the separate Call Scope pack (Agreement, Service Order, Price Schedule, Terms & Conditions and Direct Debit mandate). When Call Scope becomes its own company, change the details here - "
+                    st.caption("Used on the separate Call Scope pack (Agreement, Service Order, Price Schedule, Terms & Conditions and Direct Debit mandate). Call Scope Ltd is its own company - its name, email and website are set here - "
                                "no code change needed. Leave a box empty to use the default.")
                     _cbr = st.session_state.active_config.get("callscope_brand", {}) or {}
                     _b1, _b2 = st.columns(2)
@@ -9929,10 +10029,11 @@ def _cs_summary_html():
             + '<div class="pe-sum-foot" style="opacity:.75;font-size:.72rem">Separate agreement - its own paperwork, terms and Direct Debit.</div>')
 
 
-with _sum_card:
-    if not (_has_hw or _has_svc) and cs_active:
+with _sum_card_cs:
+    if cs_active:
         render_html(_cs_summary_html())
-    elif not (_has_hw or _has_svc):
+with _sum_card:
+    if not (_has_hw or _has_svc):
         render_html(
             '<div class="pe-empty"><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" '
             'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
@@ -9975,9 +10076,6 @@ with _sum_card:
             + "".join(f'<div class="pe-sum-row"><span class="k">{k}</span><span class="v">{v}</span></div>'
                       for k, v in _rows)
             + '</div>' + (f'<div class="pe-sum-foot">{"".join(_chips)}</div>' if _chips else ""))
-        if cs_active:
-            st.markdown("<div style='height:.8rem'></div>", unsafe_allow_html=True)
-            render_html(_cs_summary_html())
 
 with st.sidebar:
     st.markdown("")
