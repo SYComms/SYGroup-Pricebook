@@ -637,6 +637,8 @@ if "c_bb_disc" not in st.session_state:
     st.session_state.c_bb_disc = 0
 if "c_cs_disc" not in st.session_state:
     st.session_state.c_cs_disc = 0
+if "c_ac_disc" not in st.session_state:
+    st.session_state.c_ac_disc = 0
 if "c_svc_disc_w" not in st.session_state:
     st.session_state.c_svc_disc_w = 0
 if "uploaded_images" not in st.session_state:
@@ -734,7 +736,7 @@ QUOTE_KEYS = [
 _QUOTE_PREFIXES = ("q_", "desk_", "cord_", "hs_", "oth_", "bb_extra_", "rt_qty_", "sw_qty_",
                    "mob_", "it_", "sec_", "cs_", "cctv_", "xc_", "prn_", "ac_")
 _QUOTE_EXTRA = {
-    "c_desired_rental", "c_svc_disc", "c_bb_disc", "c_cs_disc", "c_notes_val",                       # consultant: target rental, discount, special conditions
+    "c_desired_rental", "c_svc_disc", "c_bb_disc", "c_cs_disc", "c_ac_disc", "c_notes_val",                       # consultant: target rental, discount, special conditions
     "router_mode", "switch_mode", "add_wired_ports", "standalone_softphones_key",
     "cs_ai_portal_free",
     "adm_bb_override", "adm_override_upfront", "adm_override_install", "adm_cp_json", "adm_maint_optout",  # manager per-deal overrides
@@ -2099,6 +2101,11 @@ with st.sidebar:
     st.session_state["q_cs_discount"] = int(st.session_state.get("c_cs_disc", 0))
     st.slider("Call Scope discount %", 0, 80, step=5, key="q_cs_discount", on_change=_sync_sidebar_cs,
               help="Call Scope services, up to 80%. Syncs with Consultant tab.")
+    def _sync_sidebar_ac():
+        st.session_state["c_ac_disc"] = st.session_state["q_ac_discount"]
+    st.session_state["q_ac_discount"] = int(st.session_state.get("c_ac_disc", 0))
+    st.slider("Air conditioning discount %", 0, 20, step=1, key="q_ac_discount", on_change=_sync_sidebar_ac,
+              help="Takes this % off the air-conditioning rental or cash price (up to 20%). Commission units drop with it. Syncs with Consultant tab.")
     # Silent floor: effective uplift never drops below 5% regardless of discount level
     service_uplift_pct = max(40 - service_discount_pct, 5)
     if any(int(st.session_state.get(f"prn_qty_{_pn}", 0) or 0) > 0 for _pn in PRINTERS):
@@ -2713,20 +2720,25 @@ def ac_order_calc(R):
     rr = ac_rate_row(term)
     term = int(rr["months"])
     rate, true_rate = float(rr["rate"]), float(rr.get("true_rate") or rr["rate"])
-    calc_rental = subtotal * rate / 1000.0
+    try:
+        _ov = json.loads(st.session_state.get("adm_cp_json") or "{}")
+    except Exception:
+        _ov = {}
+    _dsc = max(0.0, min(20.0, float(G("c_ac_disc", 0) or 0)))
+    calc_rental = subtotal * rate / 1000.0 * (1 - _dsc / 100.0)
     desired = float(G("ac_desired_rental", 0) or 0)
-    rental = round(desired if desired > 0 else calc_rental, 2)
+    rental = round(float(_ov["ac"]) if _ov.get("ac") is not None else (desired if desired > 0 else calc_rental), 2)
     funded = rental / true_rate * 1000.0 if true_rate > 0 else 0.0
     gp = funded - set_up
     unit_size = float(C.get("unit_size") or 0)
     commission = (gp / unit_size * float(C.get("unit_value") or 0)) if unit_size else 0.0
-    cash_list = subtotal * float(C.get("cash_load") or 1)
-    cash_price = round(cash_list - float(G("ac_vol_discount", 0) or 0), 2)
+    cash_list = subtotal * float(C.get("cash_load") or 1) * (1 - _dsc / 100.0)
+    cash_price = round(float(_ov["accash"]) if _ov.get("accash") is not None else cash_list - float(G("ac_vol_discount", 0) or 0), 2)
     is_cash = G("ac_pay_model") == "Cash sale"
     n_sys = R["n_sys"]
     return dict(
         qty=qty, counts=R["counts"], n_units=R["n_units"], is_cash=is_cash, term=term, term_label=rr["label"], profile=f"1+{term - 1}",
-        rental=rental, calc_rental=round(calc_rental, 2), cash_price=cash_price, support=round(float(R["maint_annual"]), 2),
+        rental=rental, calc_rental=round(calc_rental, 2), cash_list=round(cash_list - float(G("ac_vol_discount", 0) or 0), 2), cash_price=cash_price, discount=_dsc, support=round(float(R["maint_annual"]), 2),
         est_days=R["est_days"], engineers=R["engineers"], auto_install=R["auto"],
         install_elec=(n_sys * float(C["electrician"]) if R["auto"] else 0.0),
         set_up=set_up, subtotal=subtotal, gp=gp, commission=commission, funded=funded,
@@ -3317,7 +3329,7 @@ with col_hw2:
         st.markdown("**Call Scope agreement**")
         _cag1, _cag2 = st.columns(2)
         with _cag1:
-            st.selectbox("Call Scope term", [12, 24, 36, 48, 60], index=2, key="cs_term", format_func=lambda m: f"{m} months")
+            st.selectbox("Call Scope term", [12, 24, 36, 48, 60, 84], index=2, key="cs_term", format_func=lambda m: f"{m} months")
         with _cag2:
             st.selectbox("Discount style", ["Stepped - steps up to the standard price", "Fixed - same discount every year"], key="cs_style",
                          help="Only matters when a Call Scope discount is set (Consultant tab or the sidebar slider).")
@@ -3893,44 +3905,46 @@ def build_proposal_pdf(sign=None, cis=False):
             + (f"{_n_ac} air conditioning unit{'s' if _n_ac != 1 else ''}  \u00b7  " if _n_ac else "")
             + (f"{'system rental' if is_inhouse else 'hardware lease'} {gbp(hw_monthly_spread)}/mo over {term_lbl}" if is_spread
                else f"hardware {gbp(upfront)} one-off"))
-    if _phones:
-        n = min(len(_phones), 5); gap = 4
-        cw_ = (CW - gap * 4) / 5; ch_ = 38; cy_ = p.get_y()
-        for i, (name, qty) in enumerate(_phones[:5]):
-            cx_ = M + i * (cw_ + gap)
-            card(cx_, cy_, cw_, ch_, r=3)
-            p.set_fill_color(*STAGE); p.rect(cx_ + 2, cy_ + 2, cw_ - 4, 23, "F", round_corners=True, corner_radius=2)
-            b64, ext = get_product_image_b64(name)
-            _drawn = False
-            if b64:
-                try:
-                    p.image(io.BytesIO(base64.b64decode(b64)), x=cx_ + 4, y=cy_ + 3.5, w=cw_ - 8, h=20,
-                            keep_aspect_ratio=True)
-                    _drawn = True
-                except Exception:
-                    pass
-            if not _drawn:   # simple desk-phone drawing on the stage
-                bx, by = cx_ + cw_ / 2 - 9, cy_ + 7
-                p.set_fill_color(58, 66, 84)
-                p.rect(bx, by + 4, 18, 11, "F", round_corners=True, corner_radius=1.5)       # body
-                p.rect(bx - 1.5, by + 1, 4.5, 14, "F", round_corners=True, corner_radius=1.5)  # handset
-                p.set_fill_color(*ACC); p.rect(bx + 5, by + 5.5, 11, 4, "F", round_corners=True, corner_radius=0.8)  # screen
-                p.set_fill_color(150, 160, 178)
-                for kr in range(2):
-                    for kc in range(4):
-                        p.rect(bx + 5.2 + kc * 2.8, by + 10.8 + kr * 2, 1.6, 1.1, "F")
-            p.set_xy(cx_ + 1, cy_ + 26.5); p.set_font("Helvetica", "B", 6.4); p.set_text_color(*TEXT)
-            p.cell(cw_ - 2, 3.5, _ps(name.split("(")[0].replace("Wall Mounted", "Wall").replace("Ceiling Cassette", "Cassette").replace("Air conditioning installation", "Installation").strip()[:22]), align="C")
-            chip_w = 9; p.set_fill_color(*ACC_SOFT)
-            p.rect(cx_ + (cw_ - chip_w) / 2, cy_ + 31.2, chip_w, 4.4, "F", round_corners=True, corner_radius=2.2)
-            p.set_xy(cx_ + (cw_ - chip_w) / 2, cy_ + 31.4); p.set_font("Helvetica", "B", 6.5); p.set_text_color(*ACC2)
-            p.cell(chip_w, 4, f"x{qty}", align="C")
-        p.set_y(cy_ + ch_ + 3)
-        if _extra_cards > 0:
-            p.set_font("Helvetica", "", 7.5); p.set_text_color(*MUTED)
-            p.cell(0, 4, _ps(f"+ {_extra_cards} more item(s) on your order form"),
-                   new_x="LMARGIN", new_y="NEXT")
-        p.ln(5)
+    def _cards(_phones, _extra_cards):
+      if _phones:
+          n = min(len(_phones), 5); gap = 4
+          cw_ = (CW - gap * 4) / 5; ch_ = 38; cy_ = p.get_y()
+          for i, (name, qty) in enumerate(_phones[:5]):
+              cx_ = M + i * (cw_ + gap)
+              card(cx_, cy_, cw_, ch_, r=3)
+              p.set_fill_color(*STAGE); p.rect(cx_ + 2, cy_ + 2, cw_ - 4, 23, "F", round_corners=True, corner_radius=2)
+              b64, ext = get_product_image_b64(name)
+              _drawn = False
+              if b64:
+                  try:
+                      p.image(io.BytesIO(base64.b64decode(b64)), x=cx_ + 4, y=cy_ + 3.5, w=cw_ - 8, h=20,
+                              keep_aspect_ratio=True)
+                      _drawn = True
+                  except Exception:
+                      pass
+              if not _drawn:   # simple desk-phone drawing on the stage
+                  bx, by = cx_ + cw_ / 2 - 9, cy_ + 7
+                  p.set_fill_color(58, 66, 84)
+                  p.rect(bx, by + 4, 18, 11, "F", round_corners=True, corner_radius=1.5)       # body
+                  p.rect(bx - 1.5, by + 1, 4.5, 14, "F", round_corners=True, corner_radius=1.5)  # handset
+                  p.set_fill_color(*ACC); p.rect(bx + 5, by + 5.5, 11, 4, "F", round_corners=True, corner_radius=0.8)  # screen
+                  p.set_fill_color(150, 160, 178)
+                  for kr in range(2):
+                      for kc in range(4):
+                          p.rect(bx + 5.2 + kc * 2.8, by + 10.8 + kr * 2, 1.6, 1.1, "F")
+              p.set_xy(cx_ + 1, cy_ + 26.5); p.set_font("Helvetica", "B", 6.4); p.set_text_color(*TEXT)
+              p.cell(cw_ - 2, 3.5, _ps(name.split("(")[0].replace("Wall Mounted", "Wall").replace("Ceiling Cassette", "Cassette").replace("Air conditioning installation", "Installation").strip()[:22]), align="C")
+              chip_w = 9; p.set_fill_color(*ACC_SOFT)
+              p.rect(cx_ + (cw_ - chip_w) / 2, cy_ + 31.2, chip_w, 4.4, "F", round_corners=True, corner_radius=2.2)
+              p.set_xy(cx_ + (cw_ - chip_w) / 2, cy_ + 31.4); p.set_font("Helvetica", "B", 6.5); p.set_text_color(*ACC2)
+              p.cell(chip_w, 4, f"x{qty}", align="C")
+          p.set_y(cy_ + ch_ + 3)
+          if _extra_cards > 0:
+              p.set_font("Helvetica", "", 7.5); p.set_text_color(*MUTED)
+              p.cell(0, 4, _ps(f"+ {_extra_cards} more item(s) on your order form"),
+                     new_x="LMARGIN", new_y="NEXT")
+          p.ln(5)
+    _cards(_phones, _extra_cards)
 
     # 03 Monthly services
     svc_rows = []
@@ -3980,8 +3994,86 @@ def build_proposal_pdf(sign=None, cis=False):
         p.cell(55, 9, _ps(f"{gbp(svc['total_sell'])}/mo   "), align="R")
         p.set_y(ty + 15)
 
+    _sn = [3]
+    def _nx():
+        _sn[0] += 1
+        return f"{_sn[0]:02d}"
+
+    def _room(h):
+        if p.get_y() + h > PH - 20:
+            p.add_page(); p.set_y(topbar(comp_name or "") + 9)
+
+    def _rowblock(rows, total_label=None, total_val=None):
+        _room(7 * len(rows) + (12 if total_label else 0))
+        for label, val, promo in rows:
+            yy = p.get_y()
+            p.set_font("Helvetica", "", 8.8); p.set_text_color(*TEXT); p.cell(CW - 70, 7, _ps("   " + label))
+            p.set_font("Helvetica", "B", 8.8); p.set_text_color(*(GOOD if promo else TEXT))
+            p.cell(70, 7, _ps(val + "   "), align="R")
+            p.ln(7); p.set_draw_color(*LINE); p.line(M, yy + 7, PW - M, yy + 7)
+        if total_label:
+            ty = p.get_y() + 1.5
+            p.set_fill_color(*SURF2); p.rect(M, ty, CW, 9, "F", round_corners=True, corner_radius=2.5)
+            p.set_fill_color(*ACC); p.rect(M, ty, 1.2, 9, "F")
+            p.set_xy(M, ty); p.set_font("Helvetica", "B", 9.2); p.set_text_color(*TEXT)
+            p.cell(CW - 70, 9, _ps("   " + total_label))
+            p.cell(70, 9, _ps(total_val + "   "), align="R")
+            p.set_y(ty + 15)
+
+    # Call Scope (its own agreement and company)
+    if cs_active and not cs_crm_missing:
+        _cb = cs_brand(); _q = cs_quote
+        section(_nx(), f"Your {_cb['trading']} services", f"Provided by {_cb['legal']} under its own agreement  \u00b7  {_q['term']} months  \u00b7  excluding VAT")
+        _crow = []
+        for _l in _q["lines"]:
+            _crow.append((_l["name"] + (f" x{_l['qty']}" if _l["qty"] > 1 else ""), f"{gbp(_l['total'])}/mo", False))
+        if _q["discount"] > 0:
+            _crow.append((f"Includes {_q['discount']:g}% discount on the standard price", "", True))
+        for _s in _q["setup"]:
+            _crow.append((f"{_s['name']}" + (f" x{_s['qty']}" if _s["qty"] > 1 else "") + " (one-off)",
+                          "Waived" if _q["setup_mode"] == "waived" else gbp(_s["total"]), _q["setup_mode"] == "waived"))
+        _rowblock(_crow, f"Total monthly {_cb['trading']}" + (" (year 1)" if _q["discount"] > 0 and _q["style"] == "stepped" and _q["years"] > 1 else ""),
+                  f"{gbp(_q['monthly_total'])}/mo")
+
+    # SteadyTemp air conditioning (its own agreement and company)
+    if ac_active:
+        _co = st_company(); _q = ac_quote
+        section(_nx(), f"Your {_co['trading']}", f"Provided by {_co['legal']} under its own agreement  \u00b7  "
+                + ("one-off purchase" if _q["is_cash"] else f"{_q['term']} months") + "  \u00b7  excluding VAT")
+        _acc = [(it["name"], q) for it, q in AC_ORDER["listed"] if it.get("group") in AC_SYSTEM_GROUPS or it.get("group") == "Extras"]
+        _acc.sort(key=lambda t_: 0 if any(g in next((i for i in AC_CAT if i["name"] == t_[0]), {}).get("group", "") for g in AC_SYSTEM_GROUPS) else 1)
+        _cards(_acc[:5], max(0, len(_acc) - 5))
+        _arow = []
+        if _q["is_cash"]:
+            _arow.append(("Air conditioning - supplied and installed", gbp(_q["cash_price"]), False))
+        else:
+            _arow.append((f"Air conditioning rental ({_q['term']} months)", f"{gbp(_q['rental'])}/mo", False))
+        _arow.append(("On-site support after year 1", f"{gbp(_q['support'])}/yr", False))
+        _cur_ac = sum(float(st.session_state.get(k, 0) or 0) for k in ("ac_cur_running", "ac_cur_service", "ac_cur_leasing", "ac_cur_heating", "ac_cur_other"))
+        if _cur_ac > 0 and not _q["is_cash"]:
+            _dd = _cur_ac - _q["rental"]
+            _arow.append(("Your current heating / cooling costs", f"{gbp(_cur_ac)}/mo", False))
+            _arow.append(("Annual saving" if _dd >= 0 else "Cost per day", gbp(_dd * 12) if _dd >= 0 else gbp(abs(_dd) / 30.44), True))
+        _rowblock(_arow, "Air conditioning one-off price" if _q["is_cash"] else "Total monthly air conditioning",
+                  gbp(_q["cash_price"]) if _q["is_cash"] else f"{gbp(_q['rental'])}/mo")
+
+    # Everything together
+    _all_rows = []
+    if _tele_any:
+        _all_rows.append((f"{_CO} - telephony and services", f"{gbp(total_mo)}/mo", False))
+    if cs_active and not cs_crm_missing:
+        _all_rows.append((f"{cs_brand()['trading']}", f"{gbp(cs_quote['monthly_total'])}/mo", False))
+    if ac_active:
+        _all_rows.append((st_company()["trading"] + (" (one-off)" if ac_quote["is_cash"] else ""),
+                          gbp(ac_quote["cash_price"]) if ac_quote["is_cash"] else f"{gbp(ac_quote['rental'])}/mo", False))
+    if len(_all_rows) > 1:
+        _mo_all = (total_mo if _tele_any else 0.0) + (cs_quote["monthly_total"] if (cs_active and not cs_crm_missing) else 0.0) \
+                  + (ac_quote["rental"] if (ac_active and not ac_quote["is_cash"]) else 0.0)
+        section(_nx(), "Everything together", "Each under its own agreement  \u00b7  excluding VAT")
+        _rowblock(_all_rows, "Total monthly (excl. VAT)", f"{gbp(_mo_all)}/mo")
+
     # 04 Agreement at a glance
-    section("04", "Agreement at a glance")
+    section(_nx(), "Agreement at a glance")
     tiles = [("Agreement", term_lbl), ("Installation", install_type)] + (
         [("Maintenance", "Not included"), ("Hardware", "Manufacturer warranty")] if _maint_optout()
         else [("On-site warranty", "12 months inclusive"), ("Support", "Remote diagnostics")])
@@ -3996,7 +4088,7 @@ def build_proposal_pdf(sign=None, cis=False):
     p.set_y(ty_ + 21)
 
     # 05 Why us
-    section("05", f"Why businesses choose {_CO}")
+    section(_nx(), f"Why businesses choose {_CO}")
     vals = [("One bill", "Hardware, licences, broadband and support in one monthly payment."),
             ("Fully managed", "We handle installation and programming." if _maint_optout() else "We handle installation, programming, warranty and helpdesk."),
             ("Local engineers", "On-site support from engineers who know your area.")]
@@ -4011,18 +4103,40 @@ def build_proposal_pdf(sign=None, cis=False):
         p.multi_cell(vw - 8, 3.6, _ps(d), align="L")
     p.set_y(vy + 27)
 
-    # Agreement to go ahead: replaces the call to action with a sign-off block
-    def _agree_box(sign, intro):
+    # Agreement to proceed: replaces the call to action with a sign-off block
+    def _covers():
+        c = []
+        if _tele_any:
+            c.append(f"Telephony and services - {_CO_LEGAL}: {gbp(total_mo)}/mo" + (f" over {term_lbl}" if is_spread else "") + " (excl. VAT)")
+        if cs_active and not cs_crm_missing:
+            c.append(f"{cs_brand()['trading']} - {cs_brand()['legal']}: {gbp(cs_quote['monthly_total'])}/mo over {cs_quote['term']} months (excl. VAT)")
+        if ac_active:
+            _co_ = st_company()
+            c.append(f"Air conditioning - {_co_['legal']}: " + (f"{gbp(ac_quote['cash_price'])} one-off (excl. VAT)" if ac_quote["is_cash"]
+                     else f"{gbp(ac_quote['rental'])}/mo over {ac_quote['term']} months (excl. VAT)"))
+        return c
+
+    def _agree_box(sign, intro, covers=None):
+        covers = covers or []
         ay_ = p.get_y()
-        ah_ = 44
-        if ay_ + ah_ > PH - 18:           # keep it on page 2 by tightening up if needed
-            ay_ = PH - 18 - ah_
+        ah_ = 44 if not covers else 50 + 4.6 * len(covers)
+        if ay_ + ah_ > PH - 18 + (0 if not covers else -1000):   # keep it on the page by tightening up if needed
+            if covers or ay_ + ah_ > PH - 18 + 8:
+                p.add_page(); p.set_y(topbar(comp_name or "") + 9); ay_ = p.get_y()
+            else:
+                ay_ = PH - 18 - ah_
         card(M, ay_, CW, ah_, fill=SURF2, border=ACC, r=4)
         p.set_xy(M + 8, ay_ + 4); p.set_font("Helvetica", "B", 12); p.set_text_color(*TEXT)
-        p.cell(CW - 16, 6, "Agreement to go ahead")
+        p.cell(CW - 16, 6, "Agreement to proceed")
         p.set_xy(M + 8, ay_ + 10.5); p.set_font("Helvetica", "", 7.8); p.set_text_color(*MUTED)
         p.multi_cell(CW - 16, 3.8, _ps(intro), align="L")
         by_ = ay_ + 22
+        if covers:
+            _iy = p.get_y() + 0.8
+            p.set_font("Helvetica", "B", 7.8); p.set_text_color(*TEXT)
+            for _c in covers:
+                p.set_xy(M + 10, _iy); p.cell(CW - 20, 4.4, _ps("-  " + _c)); _iy += 4.6
+            by_ = _iy + 2
         p.set_fill_color(255, 255, 255); p.rect(M + 8, by_, 78, 17, "F")   # white panel for the signature
         _sb = sign.get("sig_bytes")
         if _sb and len(_sb) > 100:
@@ -4046,7 +4160,7 @@ def build_proposal_pdf(sign=None, cis=False):
         p.set_xy(M + 92, by_ + 7.5); p.cell(CW - 100, 5, _ps(f"Company: {sign.get('company') or comp_name or ''}"))
         p.set_xy(M + 92, by_ + 13.5); p.cell(CW - 100, 5, _ps(f"Date: {str(sign.get('timestamp') or '')[:10]}"))
 
-    _intro_pack = (f"I confirm that I would like {_CO} to go ahead with the services and equipment in this proposal, "
+    _intro_pack = (f"I confirm that I would like {_CO} to proceed with the services and equipment in this proposal, "
                    "subject to the Order Form, Network Services & Broadband Agreement and Terms & Conditions in this pack.")
 
     # ════════════════════════════════════════════════════════════════════════
@@ -4120,12 +4234,15 @@ def build_proposal_pdf(sign=None, cis=False):
                                            + (("System rental does not change. " if is_inhouse else "Hardware rental under your lease does not change. ") if is_spread else "")
                                            + "The full year-by-year schedule is on the Annual Price Review page of your paperwork."), align="L")
             p.set_y(_cy + 23)
-        _agree_box(sign or {}, f"I confirm that I have read and understood the term and costings above, and would like {_CO} to go ahead. "
+        _agree_box(sign or {}, f"I confirm that I have read and understood the term and costings above, and would like {_CO} to proceed. "
                                "The full paperwork (Order Form, Network Services & Broadband Agreement and Terms & Conditions) will follow for signature.")
         return bytes(p.output())
 
     if sign is not None:
-        _agree_box(sign, _intro_pack)
+        _cv = _covers()
+        _agree_box(sign, (_intro_pack if len(_cv) <= 1 else
+                          f"I confirm that I would like to proceed with the services and equipment listed below. Each is provided under its own agreement, "
+                          "subject to its Order Form and Terms & Conditions in the pack."), _cv if len(_cv) > 1 else None)
         return bytes(p.output())
 
     # Call to action
@@ -4134,7 +4251,7 @@ def build_proposal_pdf(sign=None, cis=False):
     cy_ = p.get_y()
     card(M, cy_, CW, 24, fill=SURF2, border=ACC, r=4)
     p.set_xy(M + 8, cy_ + 5); p.set_font("Helvetica", "B", 12.5); p.set_text_color(*TEXT)
-    p.cell(CW - 16, 6, "Ready to go ahead?")
+    p.cell(CW - 16, 6, "Ready to proceed?")
     p.set_xy(M + 8, cy_ + 11.5); p.set_font("Helvetica", "", 8.5); p.set_text_color(*MUTED)
     p.cell(CW - 16, 4.5, _ps("Reply to this proposal or give us a call, and we'll take care of the rest."))
     p.set_xy(M + 8, cy_ + 16.8); p.set_font("Helvetica", "B", 8.5); p.set_text_color(*ACC2)
@@ -6878,13 +6995,13 @@ def supplier_panel(pdf, sup):
 
 
 def cover_page(pdf, cfg, who, title_line, tiles, docs, services=None, prepared_by="", sign=None, highlight=None):
-    """Page 1: 'Agreement to go ahead'. One signature here accepts every page of the pack - the box to drop the
+    """Page 1: 'Agreement to proceed'. One signature here accepts every page of the pack - the box to drop the
     Zoho Sign signature field onto (or the on-screen signature when signed in person)."""
     B = cfg["brand"]
     sign = sign or {}
-    pdf.label = "AGREEMENT TO GO AHEAD"
+    pdf.label = "AGREEMENT TO PROCEED"
     pdf.add_page()
-    pdf.doc_title("Agreement to go ahead", title_line)
+    pdf.doc_title("Agreement to proceed", title_line)
     pdf.para(f"Thank you for choosing {B['trading']}. This page summarises your agreement. Signing once, at the bottom of this page, "
              "confirms you accept every page in this pack - there is nothing else to sign.")
     pdf.ln(3)
@@ -6907,11 +7024,11 @@ def cover_page(pdf, cfg, who, title_line, tiles, docs, services=None, prepared_b
         pdf.set_y(max(pdf.get_y() + 4, 277 - need))
     company = who.get("company") or "the business named above"
     pdf.set_fill_color(*pdf.NAVY); pdf.set_text_color(255, 255, 255); pdf.set_font("Helvetica", "B", 9)
-    pdf.cell(180, 7.5, s("  Agreement to go ahead"), fill=True, new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(180, 7.5, s("  Agreement to proceed"), fill=True, new_x="LMARGIN", new_y="NEXT")
     pdf.ln(1.5)
     pdf.set_font("Helvetica", "", 8.2); pdf.set_text_color(*INK)
     pdf.multi_cell(180, 4.2, s(f"I am authorised to sign for {company}. I have read and agree to everything in this pack (pages 2 to {{nb}}) "
-                               f"and I ask {B['legal']} to go ahead."), new_x="LMARGIN", new_y="NEXT")
+                               f"and I ask {B['legal']} to proceed."), new_x="LMARGIN", new_y="NEXT")
     y0 = pdf.get_y() + 3
     # signature box
     pdf.set_fill_color(255, 255, 255); pdf.set_draw_color(*pdf.VIO); pdf.set_line_width(0.5)
@@ -7019,7 +7136,7 @@ def mandate_page(pdf, cfg, q, cust, bank, sign=None):
 
 
 def customer_pack(cfg, q, cust, terms, prepared_by="", sign=None, bank=None, notes=None, price_note="", show_mandate=True):
-    """Call Scope pack: Agreement to go ahead, Service Order, Price Schedule, Terms & Conditions, Direct Debit mandate.
+    """Call Scope pack: Agreement to proceed, Service Order, Price Schedule, Terms & Conditions, Direct Debit mandate.
     terms: [(heading, [paragraphs])] already filled in."""
     B = cfg["brand"]
     q = dict(q, show_review=False)
@@ -7125,7 +7242,7 @@ def customer_pack(cfg, q, cust, terms, prepared_by="", sign=None, bank=None, not
         pts.append(price_note)
     pts.append("If you add or remove users or modules, this schedule is recalculated in the same way.")
     pdf.bullets(pts)
-    signed_note(pdf, "This Order and Price Schedule are accepted by signing the Agreement to go ahead on page 1.")
+    signed_note(pdf, "This Order and Price Schedule are accepted by signing the Agreement to proceed on page 1.")
 
     pdf.label = "TERMS & CONDITIONS"
     pdf.terms_pages(f"{B['trading']} Terms & Conditions", terms,
@@ -7204,7 +7321,7 @@ _CS_PRICE_NOTE = ("Call Scope sets its own prices. The charges are fixed for the
 
 
 def build_callscope_pack(sign=None):
-    """The separate Call Scope pack: Agreement to go ahead, Service Order, Price Schedule, Terms & Conditions and a Direct Debit mandate.
+    """The separate Call Scope pack: Agreement to proceed, Service Order, Price Schedule, Terms & Conditions and a Direct Debit mandate.
     sign = {"sig": png bytes or None, "name": str, "date": str}. None if no Call Scope is selected."""
     if not cs_quote:
         return None
@@ -7488,7 +7605,7 @@ def compute_hw_buy():
             total += ROUTERS[router_type]
     return total
 
-_CP_KEYS = ("lic", "bb1", "hw", "inst", "bbinst", "desk", "cord", "hs", "other", "switch", "router")
+_CP_KEYS = ("lic", "bb1", "cs", "ac", "accash", "hw", "inst", "bbinst", "desk", "cord", "hs", "other", "switch", "router")
 
 def _cp_saved():
     """Saved manager overrides of what the customer is charged (Admin - Per-Deal Overrides - Customer prices)."""
@@ -7774,6 +7891,7 @@ if cs_disc_pct > 0:
     svc["cs_sell"] = _cs_svc_sell
 # ═══ CALL SCOPE ORDER - priced on its own, never added into the telephony totals, lease, P&L or paperwork ═══
 cs_quote = None
+cs_auto_monthly = 0.0
 cs_target_note = ""
 cs_notes = []
 cs_crm_missing = False
@@ -7792,20 +7910,29 @@ if cs_order_rows:
                 "annual_review_pct": 0.0}
     cs_disc_eff = float(cs_disc_pct)
     cs_target_note = ""
+    _disc_tot = sum(m["rrp"] * m["qty"] for m in _cs_mods if m["discountable"])
+    _fix_tot = sum(m["rrp"] * m["qty"] for m in _cs_mods if not m["discountable"])
+    def _cs_solve(tgt):
+        if _disc_tot <= 0:
+            return None, "no discountable items"
+        _d = (1 - (tgt - _fix_tot) / _disc_tot) * 100
+        if _d < 0:
+            return 0.0, "above the standard price - quoted at standard"
+        if _d > 80:
+            return 80.0, "below the 80% discount limit - quoted at the lowest allowed"
+        return round(_d, 2), ""
     _cs_tgt = float(st.session_state.get("cs_target_rental") or 0)
     if _cs_tgt > 0:
-        _disc_tot = sum(m["rrp"] * m["qty"] for m in _cs_mods if m["discountable"])
-        _fix_tot = sum(m["rrp"] * m["qty"] for m in _cs_mods if not m["discountable"])
-        if _disc_tot > 0:
-            _d = (1 - (_cs_tgt - _fix_tot) / _disc_tot) * 100
-            if _d < 0:
-                cs_disc_eff, cs_target_note = 0.0, "above the standard price - quoted at standard"
-            elif _d > 80:
-                cs_disc_eff, cs_target_note = 80.0, "below the 80% discount limit - quoted at the lowest allowed"
-            else:
-                cs_disc_eff = round(_d, 2)
-        else:
-            cs_target_note = "no discountable items"
+        _dd, cs_target_note = _cs_solve(_cs_tgt)
+        if _dd is not None:
+            cs_disc_eff = _dd
+    cs_auto_monthly = round(_fix_tot + _disc_tot * (1 - cs_disc_eff / 100.0), 2)     # before any admin override
+    _cs_ov = _cp_saved().get("cs")
+    if _cs_ov is not None:
+        _dd, cs_target_note = _cs_solve(float(_cs_ov))
+        if _dd is not None:
+            cs_disc_eff = _dd
+        cs_target_note = ("admin price: " + cs_target_note) if cs_target_note else ""
     cs_quote = _csx.customer_quote(
         _cs_cfgx, {m["id"]: m["qty"] for m in _cs_mods}, term=int(st.session_state.get("cs_term", 36) or 36),
         discount=cs_disc_eff, style=("fixed" if str(st.session_state.get("cs_style", "")).startswith("Fixed") else "stepped"),
@@ -7845,7 +7972,8 @@ if svc_disc_pct > 0 or bb_disc_pct > 0 or cs_disc_pct > 0:
 # ── Manager overrides of the customer's monthly prices (Admin - Per-Deal Overrides - Customer prices) ──
 # Applied to the list total as well as the final one, so an override never counts as a "discount" against commission.
 _cp = _cp_saved()
-_cp_auto = {"lic": float(svc["lic_monthly"]), "bb1": float(svc["bb1_sell"])}
+_cp_auto = {"lic": float(svc["lic_monthly"]), "bb1": float(svc["bb1_sell"]), "cs": float(cs_auto_monthly),
+            "ac": float(ac_quote["calc_rental"]) if ac_quote else 0.0, "accash": float(ac_quote["cash_list"]) if ac_quote else 0.0}
 _cp_delta = 0.0
 if _cp.get("lic") is not None:
     _n = round(float(_cp["lic"]), 2); _cp_delta += _n - svc["lic_monthly"]; svc["lic_monthly"] = _n
@@ -8366,7 +8494,7 @@ with tab3:
             mime="application/pdf",
             use_container_width=True
         )
-        st.markdown('<div class="success-box">✅ PDF ready - Proposal Summary (with agreement to go ahead), Order Form, Network Agreement, Mandate & Checklist.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="success-box">✅ PDF ready - Proposal Summary (with agreement to proceed), Order Form, Network Agreement, Mandate & Checklist.</div>', unsafe_allow_html=True)
         if _loa_data()["on"] and _loa_data()["numbers"]:
             st.markdown("---")
             st.markdown("#### 📞 Letter of Authority only")
@@ -8381,7 +8509,7 @@ with tab3:
         if cs_active:
             st.markdown("---")
             st.markdown("#### 🔮 Call Scope pack (separate agreement)")
-            st.caption("Call Scope has its own paperwork: Agreement to go ahead, Service Order, Price Schedule, Terms & Conditions and a Direct Debit mandate. "
+            st.caption("Call Scope has its own paperwork: Agreement to proceed, Service Order, Price Schedule, Terms & Conditions and a Direct Debit mandate. "
                        "It is not part of the telephony pack above.")
             if cs_crm_missing:
                 st.warning("Enter the customer's CRM in the Call Scope card (AI CRM Integration) to produce this pack.")
@@ -9074,7 +9202,7 @@ with tab5:
         _appt_rates = {"Self Gen": 1000, "Base Deal": 600, "Acquisition": 500, "Telemarketer": 650}
         st.info(f"📋 Appointment type: **{_appt}** — commission rate £{_appt_rates.get(_appt, 1000):,}/unit")
         st.markdown("### 🏷️ Services Discount")
-        st.caption("Discount user licences by up to 50%, Call Scope by up to 80% and broadband by up to 10% - each has its own slider. "
+        st.caption("Discount user licences by up to 50%, Call Scope by up to 80%, air conditioning by up to 20% and broadband by up to 10% - each has its own slider. "
                    "Commission is reduced by the share of the monthly services you give away, so bigger categories cost more.")
 
         def _sync_svc_disc():
@@ -9103,6 +9231,13 @@ with tab5:
             st.slider("Call Scope discount (%)", min_value=0, max_value=80, step=5,
                       key="c_cs_disc_w", on_change=_sync_cs_disc,
                       help="Discount on Call Scope services, up to 80%.")
+            def _sync_ac_disc():
+                st.session_state["c_ac_disc"] = st.session_state["c_ac_disc_w"]
+                st.session_state["q_ac_discount"] = st.session_state["c_ac_disc_w"]
+            st.session_state["c_ac_disc_w"] = int(st.session_state.get("c_ac_disc", 0))
+            st.slider("Air conditioning discount (%)", min_value=0, max_value=20, step=1,
+                      key="c_ac_disc_w", on_change=_sync_ac_disc,
+                      help="Takes this % off the air-conditioning rental or cash price, up to 20%. Commission units drop with it.")
 
             def _svc_row(label, list_price, new_price, note=""):
                 _chg = new_price < list_price - 0.005
@@ -9560,7 +9695,7 @@ with tab6:
 
         # ══ STEP 1 - Contract Information Sheet ══════════════════════════════
         st.markdown("#### Step 1 - Contract Information Sheet")
-        st.caption("The first document: contract term and costings with an 'Agreement to go ahead' box. "
+        st.caption("The first document: contract term and costings with an 'Agreement to proceed' box. "
                    "Get this signed first, then move on to Step 2.")
         _cis_blank = build_proposal_pdf(sign={"sig_bytes": None, "name": sig_name or "", "company": comp_name or "", "timestamp": ""}, cis=True)
         st.download_button(
@@ -9612,7 +9747,7 @@ with tab6:
 
         # ── Generate & download signed PDF ───────────────────────────────────
         st.markdown("**Signed Pack**")
-        st.caption("The proposal overview at the front keeps a blank 'Agreement to go ahead' box for Zoho Sign.")
+        st.caption("The proposal overview at the front keeps a blank 'Agreement to proceed' box for Zoho Sign.")
         _missing = []
         if not sig_bytes: _missing.append("signature")
         if not sig_name:  _missing.append("customer name")
@@ -9659,7 +9794,7 @@ with tab6:
         if cs_active:
             st.divider()
             st.markdown("#### Call Scope pack (separate agreement)")
-            st.caption("Its own Agreement to go ahead, order, price schedule, Terms & Conditions and Direct Debit mandate - signed separately from the telephony pack.")
+            st.caption("Its own Agreement to proceed, order, price schedule, Terms & Conditions and Direct Debit mandate - signed separately from the telephony pack.")
             if cs_crm_missing:
                 st.warning("Enter the customer's CRM in the Call Scope card (AI CRM Integration) to produce this pack.")
             else:
@@ -9750,7 +9885,7 @@ with tab6:
     st.divider()
     st.markdown("### ✍️ Send via Zoho Sign")
     st.caption("Step 1: upload the Contract Information Sheet to Zoho Sign and send it for signature. "
-               "Step 2: once it is signed, upload the full pack (its 'Agreement to go ahead' box stays blank for Zoho Sign too). "
+               "Step 2: once it is signed, upload the full pack (its 'Agreement to proceed' box stays blank for Zoho Sign too). "
                "If Call Scope or SteadyTemp air conditioning is on the deal, each has its own separate pack, sent for signature on its own (or use the combined pack).")
     st.link_button("Open Zoho Sign →", "https://sign.zoho.eu", use_container_width=False)
 
@@ -9857,6 +9992,25 @@ if _show_admin:
                     with m2:
                         st.number_input(f"Broadband, main line (£/mo) - now £{_cp_auto['bb1']:,.2f}", min_value=0.0, step=1.0,
                                         value=_sv.get("bb1"), key="cpf_bb1", format="%.2f")
+                    if cs_active or ac_active:
+                        st.markdown("**Call Scope and air conditioning (their own agreements)**")
+                        x1, x2 = st.columns(2)
+                        with x1:
+                            if cs_active:
+                                st.number_input(f"Call Scope monthly (£/mo) - now £{_cp_auto['cs']:,.2f}", min_value=0.0, step=1.0,
+                                                value=_sv.get("cs"), key="cpf_cs", format="%.2f",
+                                                help="What the customer pays each month for Call Scope. Worked out as a discount (up to 80%).")
+                            else:
+                                st.caption("Call Scope is not on this deal.")
+                        with x2:
+                            if ac_active and ac_quote["is_cash"]:
+                                st.number_input(f"Air conditioning cash price (£) - now £{_cp_auto['accash']:,.2f}", min_value=0.0, step=10.0,
+                                                value=_sv.get("accash"), key="cpf_accash", format="%.2f")
+                            elif ac_active:
+                                st.number_input(f"Air conditioning monthly rental (£/mo) - now £{_cp_auto['ac']:,.2f}", min_value=0.0, step=1.0,
+                                                value=_sv.get("ac"), key="cpf_ac", format="%.2f")
+                            else:
+                                st.caption("Air conditioning is not on this deal.")
                     if not is_lease:
                         st.markdown("**One-off (upfront / in-house deals)**")
                         o1, o2, o3 = st.columns(3)
@@ -10611,6 +10765,8 @@ if st.session_state.admin_unlocked:
 _show_dash = st.session_state.get("show_deal_dashboard", True) if st.session_state.admin_unlocked else True
 if _show_dash:
     st.markdown('<div class="section-header">📊 Deal Dashboard</div>', unsafe_allow_html=True)
+    if n_packs() >= 2:
+        st.markdown("#### 📞 Telephony")
 
     if is_spread:
         k1, k2 = st.columns(2)
@@ -10768,6 +10924,69 @@ if _show_dash:
             st.markdown(f'<div class="warning-box">{pat_warn}</div>', unsafe_allow_html=True)
         if override_bb_sell > 0:
             st.markdown(f'<div class="info-box">🔐 BB Override by: {override_initials or "?"} | Customer: {override_customer or "?"}</div>', unsafe_allow_html=True)
+
+    # ── Call Scope, air conditioning and the overall deal (each its own agreement) ──
+    def _mcard(label, value, sub="", col="var(--text)", border="var(--border-strong)", size="1.6rem"):
+        return (f'<div class="metric-card" style="border-left:4px solid {border}"><div class="metric-label">{label}</div>'
+                f'<div class="metric-value" style="color:{col};font-size:{size}">{value}</div><div class="metric-sub">{sub}</div></div>')
+    _is_adm = bool(st.session_state.admin_unlocked)
+    _cs_on = bool(cs_active and not cs_crm_missing)
+    _unit_sz = float(commission_unit_size or 4000)
+    _cs_units = (float(cs_quote.get("profit", 0) or 0) / _unit_sz) if _cs_on else 0.0
+    _ac_gp = ((ac_quote["cash_gp"] if ac_quote["is_cash"] else ac_quote["gp"]) if ac_active else 0.0)
+    _ac_units = _ac_gp / _unit_sz if ac_active else 0.0
+    if _cs_on:
+        st.markdown("#### 🔮 Call Scope")
+        _q = cs_quote
+        _cols = st.columns(3 if not _is_adm else 3)
+        _cols[0].markdown(_mcard("Call Scope Monthly", f"£{_q['monthly_total']:,.2f}",
+                                 f"{_q['term']} months, excl. VAT" + (f" · {_q['discount']:g}% discount" if _q["discount"] > 0 else "")), unsafe_allow_html=True)
+        _setup_tot = sum(s_["total"] for s_ in _q["setup"]) if _q["setup_mode"] != "waived" else 0.0
+        _cols[1].markdown(_mcard("Set-up (one-off)", f"£{_setup_tot:,.2f}", "Waived" if _q["setup_mode"] == "waived" else "Excl. VAT"), unsafe_allow_html=True)
+        _cols[2].markdown(_mcard("Value over term", f"£{_q['services_value']:,.0f}", f"{_q['term']} months of Call Scope"), unsafe_allow_html=True)
+        if _is_adm:
+            a1, a2, a3, a4 = st.columns(4)
+            a1.markdown(_mcard("Monthly cost", f"£{_q['buy_monthly']:,.2f}", "What Call Scope costs us each month"), unsafe_allow_html=True)
+            a2.markdown(_mcard("Monthly margin", f"£{_q['monthly_total'] - _q['buy_monthly']:,.2f}", "Sell less cost", col="var(--accent)", border="var(--accent)"), unsafe_allow_html=True)
+            a3.markdown(_mcard("Profit over term", f"£{_q['profit']:,.0f}", "After set-up costs", col="var(--good)", border="var(--good)"), unsafe_allow_html=True)
+            a4.markdown(_mcard("Units", f"{_cs_units:.2f}", f"£{commission_per_unit:.0f}/unit = £{_cs_units * commission_per_unit:,.0f}", col="var(--accent)", border="var(--accent)"), unsafe_allow_html=True)
+    if ac_active:
+        st.markdown("#### ❄️ Air conditioning")
+        _q = ac_quote
+        b1_, b2_, b3_ = st.columns(3)
+        if _q["is_cash"]:
+            b1_.markdown(_mcard("Cash Price", f"£{_q['cash_price']:,.2f}", "One-off, excl. VAT" + (f" · {_q['discount']:g}% discount" if _q["discount"] > 0 else "")), unsafe_allow_html=True)
+        else:
+            b1_.markdown(_mcard("Air Con Monthly", f"£{_q['rental']:,.2f}", f"{_q['term']} months, excl. VAT" + (f" · {_q['discount']:g}% discount" if _q["discount"] > 0 else "")), unsafe_allow_html=True)
+        b2_.markdown(_mcard("Units fitted", f"{_q['n_units']}", f"{_q['est_days']:g} day(s) · {_q['engineers']} engineer(s)"), unsafe_allow_html=True)
+        b3_.markdown(_mcard("Support after year 1", f"£{_q['support']:,.2f}", "Per year, excl. VAT"), unsafe_allow_html=True)
+        if _is_adm:
+            c1_, c2_, c3_, c4_ = st.columns(4)
+            c1_.markdown(_mcard("Lease value" if not _q["is_cash"] else "Cash price", f"£{(_q['funded'] if not _q['is_cash'] else _q['cash_price']):,.0f}",
+                                "What the funder pays for this rental" if not _q["is_cash"] else "Customer pays up front"), unsafe_allow_html=True)
+            c2_.markdown(_mcard("Cost to us", f"£{_q['set_up']:,.0f}", "Equipment, install, support year 1 and fees"), unsafe_allow_html=True)
+            c3_.markdown(_mcard("Gross profit", f"£{_ac_gp:,.0f}", "Lease value less cost" if not _q["is_cash"] else "Cash price less cost", col="var(--good)", border="var(--good)"), unsafe_allow_html=True)
+            c4_.markdown(_mcard("Units", f"{_ac_units:.2f}", f"£{commission_per_unit:.0f}/unit = £{_ac_units * commission_per_unit:,.0f}", col="var(--accent)", border="var(--accent)"), unsafe_allow_html=True)
+    if n_packs() >= 2:
+        st.markdown("#### 🧾 Overall - all agreements together")
+        _o_mo = (total_mo if _tele_any else 0.0) + (cs_quote["monthly_total"] if _cs_on else 0.0) + (ac_quote["rental"] if (ac_active and not ac_quote["is_cash"]) else 0.0)
+        _o_one = ((upfront if (_tele_any and not is_spread) else 0.0)
+                  + (sum(s_["total"] for s_ in cs_quote["setup"]) if (_cs_on and cs_quote["setup_mode"] != "waived") else 0.0)
+                  + (ac_quote["cash_price"] if (ac_active and ac_quote["is_cash"]) else 0.0))
+        _parts = ([f"Telephony £{total_mo:,.2f}"] if _tele_any else []) + ([f"Call Scope £{cs_quote['monthly_total']:,.2f}"] if _cs_on else []) \
+                 + ([f"Air con £{ac_quote['rental']:,.2f}"] if (ac_active and not ac_quote["is_cash"]) else [])
+        o1_, o2_ = st.columns(2)
+        o1_.markdown(_mcard("Total Monthly (all)", f"£{_o_mo:,.2f}", " + ".join(_parts) + " · excl. VAT"), unsafe_allow_html=True)
+        o2_.markdown(_mcard("Total One-off (all)", f"£{_o_one:,.2f}", "Hardware, set-up and cash sales · excl. VAT"), unsafe_allow_html=True)
+        if _is_adm:
+            _t_units = float(commission_units or 0) + _cs_units + _ac_units
+            _t_gp = (float(_total_gp) if _tele_any else 0.0) + (float(cs_quote["profit"]) if _cs_on else 0.0) + _ac_gp
+            _lv = (float(lease_value) if (_tele_any and is_lease) else 0.0) + (float(ac_quote["funded"]) if (ac_active and not ac_quote["is_cash"]) else 0.0)
+            g1, g2, g3, g4 = st.columns(4)
+            g1.markdown(_mcard("Total lease value", f"£{_lv:,.0f}", "Telephony + air conditioning leases"), unsafe_allow_html=True)
+            g2.markdown(_mcard("Total gross profit", f"£{_t_gp:,.0f}", "Telephony + Call Scope + air conditioning", col="var(--good)", border="var(--good)"), unsafe_allow_html=True)
+            g3.markdown(_mcard("Total units", f"{_t_units:.2f}", f"Telephony {float(commission_units or 0):.2f} · Call Scope {_cs_units:.2f} · Air con {_ac_units:.2f}", col="var(--accent)", border="var(--accent)"), unsafe_allow_html=True)
+            g4.markdown(_mcard("Est. commission", f"£{float(commission) + (_cs_units + _ac_units) * commission_per_unit:,.0f}", "At the rate for this deal", col="var(--accent)", border="var(--accent)"), unsafe_allow_html=True)
 
 
 # ─── END OF RUN: hero, live summary, sign out ───────────────────────────────
