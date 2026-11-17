@@ -9720,7 +9720,7 @@ with tab6:
             st.caption("✏️ Draw signature above then click Save Signature")
 
         # Confirm name typed
-        sig_name = st.text_input("Customer full name (typed confirmation)",
+        sig_name = st.text_input("Customer full name and position (typed confirmation)",
                                  value=contact_name or "", key="sig_name_confirm",
                                  placeholder="e.g. Jane Smith - Director")
     with send_col:
@@ -9730,103 +9730,100 @@ with tab6:
         from datetime import datetime as _dtnow
         _ts = _dtnow.now().strftime("%d/%m/%Y  %H:%M")
 
-        # ══ STEP 1 - Contract Information Sheet ══════════════════════════════
-        st.markdown("#### Step 1 - Contract Information Sheet")
-        st.caption("The first document: contract term and costings with an 'Acceptance of contract terms' box (the full pack has its own, separate 'Agreement to proceed'). "
-                   "Get this signed first, then move on to Step 2.")
-        _cis_blank = build_proposal_pdf(sign={"sig_bytes": None, "name": sig_name or "", "company": comp_name or "", "timestamp": ""}, cis=True)
-        st.download_button(
-            "📥 Contract Information Sheet - blank signature box (for Zoho Sign)",
-            data=_cis_blank,
-            file_name=f"SYComms_{safe}_ContractInfoSheet_{date.today()}.pdf",
-            mime="application/pdf", use_container_width=True, key="dl_cis_blank",
-        )
-        if sig_bytes and sig_name:
-            _cis_signed = build_proposal_pdf(sign={"sig_bytes": sig_bytes, "name": sig_name, "company": comp_name or "", "timestamp": _ts}, cis=True)
-            st.download_button(
-                "✅ Contract Information Sheet - signed now",
-                data=_cis_signed,
-                file_name=f"SYComms_{safe}_ContractInfoSheet_SIGNED_{date.today()}.pdf",
-                mime="application/pdf", use_container_width=True, type="primary", key="dl_cis_signed",
-            )
+        _two = n_packs() >= 2
+        st.markdown("### 🧭 Signing steps")
+        _unsigned_bytes = build_pdf(sig_bytes=None, curr_total=current_total, curr_bb=current_bb,
+                                    curr_system=current_system, curr_calls=current_calls, curr_mobile=current_mobile)
+
+        # ── Steps 1-2: the initial document, signed in Zoho Sign ────────────────
+        if _tele_any:
+            st.markdown("#### Step 1 - Download the unsigned agreement to proceed")
+            st.caption("The Contract Information Sheet: the contract term and costings with a single signature box ('Acceptance of contract terms'), for Zoho Sign.")
+            _cis_blank = build_proposal_pdf(sign={"sig_bytes": None, "name": sig_name or "", "company": comp_name or "", "timestamp": ""}, cis=True)
+            st.download_button("📥 Download unsigned Contract Information Sheet", data=_cis_blank,
+                               file_name=f"SYComms_{safe}_ContractInfoSheet_{date.today()}.pdf",
+                               mime="application/pdf", use_container_width=True, key="dl_cis_blank")
+            with st.expander("Or sign this first document here instead"):
+                if sig_bytes and sig_name:
+                    st.download_button("✅ Contract Information Sheet - signed now",
+                                       data=build_proposal_pdf(sign={"sig_bytes": sig_bytes, "name": sig_name, "company": comp_name or "", "timestamp": _ts}, cis=True),
+                                       file_name=f"SYComms_{safe}_ContractInfoSheet_SIGNED_{date.today()}.pdf",
+                                       mime="application/pdf", use_container_width=True, type="primary", key="dl_cis_signed")
+                else:
+                    st.caption("Add the signature and name (step 3) to sign it here.")
+            st.markdown("#### Step 2 - Send it via Zoho Sign")
+            st.link_button("Open Zoho Sign - send the Contract Information Sheet →", "https://sign.zoho.eu")
+            _cis_done = st.checkbox("Step 2 complete - the customer has signed it and it has been returned", key="cis_done")
         else:
-            st.caption("To sign it here instead, add the signature and name on the left.")
-        _cis_done = st.checkbox("Step 1 complete - Contract Information Sheet signed and returned",
-                                key="cis_done")
+            _cis_done = True
+            st.info("There is no telephony on this deal, so the Contract Information Sheet (steps 1 and 2) isn't needed - start at step 3.")
 
-        st.divider()
+        # ── Step 3: capture ────────────────────────────────────────────────────
+        st.markdown("#### Step 3 - Capture the customer's signature, name and position")
+        st.caption("On the left: draw or upload the signature, press Save Signature, then type their full name and position.")
+        st.markdown(("✅" if sig_bytes else "⬜") + " Signature saved  \n" + ("✅" if sig_name else "⬜") + " Name and position typed")
 
-        # ══ STEP 2 - Full paperwork pack ═════════════════════════════════════
-        st.markdown("#### Step 2 - Full paperwork pack")
-        if not _cis_done:
-            st.info("Complete Step 1 first (tick the box above once the Contract Information Sheet is signed). "
-                    "You can still preview the unsigned pack below.")
-
-        # ── Download unsigned PDF (always available) ─────────────────────────
-        st.markdown("**Unsigned Pack**")
-        st.caption("Full proposal pack without signature - for review or printing.")
-        _unsigned_bytes = build_pdf(
-            sig_bytes=None,
-            curr_total=current_total, curr_bb=current_bb,
-            curr_system=current_system, curr_calls=current_calls,
-            curr_mobile=current_mobile,
-        )
-        st.download_button(
-            "📥 Download Full Pack (Unsigned)",
-            data=_unsigned_bytes,
-            file_name=f"SYComms_{safe}_{date.today()}.pdf",
-            mime="application/pdf",
-            use_container_width=True,
-            key="dl_unsigned",
-        )
-
-        st.divider()
-
-        # ── Generate & download signed PDF ───────────────────────────────────
-        st.markdown("**Signed Pack**")
-        st.caption("The proposal overview at the front keeps a blank 'Agreement to proceed' box for Zoho Sign.")
-        _missing = []
-        if not sig_bytes: _missing.append("signature")
-        if not sig_name:  _missing.append("customer name")
-        if _missing:
-            st.caption(f"Still needed: {', '.join(_missing)}")
+        # ── Step 4: signed pack ───────────────────────────────────────────────
+        st.markdown("#### Step 4 - Download the " + ("combined " if _two else "") + "signed pack")
+        st.caption("The signature, name and date are filled in everywhere they belong - apart from the single 'Agreement to proceed' box on the proposal, "
+                   "which is left blank for Zoho Sign.")
+        if cs_crm_missing:
+            st.warning("Call Scope is held back from the pack until the customer's CRM is entered in the Call Scope card.")
+        _signed_bytes = None
+        _sgx = {"sig_bytes": sig_bytes, "name": sig_name, "company": comp_name or "", "ts": _ts, "ip": _client_ip}
         if sig_bytes and sig_name and _cis_done:
-            _signed_bytes = build_pdf(
-                sig_bytes=sig_bytes,
-                sig_name=sig_name,
-                sig_company=comp_name or "",
-                sig_timestamp=_ts,
-                sig_ip=_client_ip,
-                curr_total=current_total, curr_bb=current_bb,
-                curr_system=current_system, curr_calls=current_calls,
-                curr_mobile=current_mobile,
-            )
-            st.session_state["_signed_pdf_bytes"]    = _signed_bytes
-            st.session_state["_signed_pdf_filename"] = f"SYComms_{safe}_SIGNED_{date.today()}.pdf"
-            st.download_button(
-                "✅ Download Signed Pack",
-                data=_signed_bytes,
-                file_name=f"SYComms_{safe}_SIGNED_{date.today()}.pdf",
-                mime="application/pdf",
-                use_container_width=True,
-                type="primary",
-                key="dl_signed",
-            )
-            st.download_button(
-                "💾 Save the quote file (.json) - keep it with the signed pack",
-                data=json.dumps(quote_snapshot(), indent=2, default=str),
-                file_name=f"SYComms_{safe}_QUOTE_{date.today()}.json",
-                mime="application/json",
-                use_container_width=True,
-                key="dl_signed_quote",
-                help="Lets anyone reopen this exact deal later (Load previous quote) - for example to correct the company branding and re-issue the paperwork.",
-            )
-            st.caption("Download this at the same time as the signed pack and store them together.")
+            if _tele_any:
+                _signed_bytes = build_pdf(sig_bytes=sig_bytes, sig_name=sig_name, sig_company=comp_name or "", sig_timestamp=_ts, sig_ip=_client_ip,
+                                          curr_total=current_total, curr_bb=current_bb, curr_system=current_system,
+                                          curr_calls=current_calls, curr_mobile=current_mobile)
+            try:
+                _main = build_combined(_signed_bytes, _sgx) if (_two or not _tele_any) else _signed_bytes
+                st.session_state["_signed_pdf_bytes"]    = _main
+                st.session_state["_signed_pdf_filename"] = f"{'Combined_Pack' if _two else 'SYComms'}_{safe}_SIGNED_{date.today()}.pdf"
+                st.download_button("✅ Download the " + ("COMBINED " if _two else "") + "signed pack", data=_main,
+                                   file_name=st.session_state["_signed_pdf_filename"], mime="application/pdf",
+                                   use_container_width=True, type="primary", key="dl_signed")
+            except Exception as _cse:
+                st.error(f"Couldn't build the signed pack: {_cse}")
         else:
-            st.info("Tick Step 1 complete, then add the signature and name on the left to enable the signed download."
-                    if not _cis_done else "Add signature and name on the left to enable the signed download.")
-            st.button("✅ Download Signed Pack", disabled=True,
-                      use_container_width=True, key="dl_signed_dis")
+            _why = []
+            if _tele_any and not _cis_done: _why.append("tick 'Step 2 complete' above")
+            if not sig_bytes: _why.append("save the signature")
+            if not sig_name: _why.append("type the customer name and position")
+            st.button("✅ Download the " + ("COMBINED " if _two else "") + "signed pack", disabled=True, use_container_width=True, key="dl_signed_dis")
+            st.caption("To unlock it: " + ", ".join(_why) + ".")
+
+        # ── Step 5 ────────────────────────────────────────────────────────────
+        st.markdown("#### Step 5 - Send it via Zoho Sign")
+        st.caption("Upload the signed pack. The customer signs the one 'Agreement to proceed' box that was left blank.")
+        st.link_button("Open Zoho Sign - send the signed pack →", "https://sign.zoho.eu")
+
+        # ── Step 6 ────────────────────────────────────────────────────────────
+        st.markdown("#### Step 6 - Save the " + ("combined " if _two else "") + "document pack")
+        st.caption("When Zoho Sign returns the completed document, save it together with this quote file, so the deal can be reopened later "
+                   "(Load previous quote) - for example to correct the branding and re-issue the paperwork.")
+        st.download_button("💾 Save the quote file (.json)", data=json.dumps(quote_snapshot(), indent=2, default=str),
+                           file_name=f"SYComms_{safe}_QUOTE_{date.today()}.json", mime="application/json",
+                           use_container_width=True, key="dl_signed_quote")
+
+        st.divider()
+        st.markdown("### 🗂️ Individual packs and other documents")
+        st.caption("If you only need one pack, or want to preview a blank one, use these.")
+        if _tele_any:
+            st.markdown("**Telephony pack**")
+            st.download_button("📥 Download Full Pack (Unsigned)", data=_unsigned_bytes, file_name=f"SYComms_{safe}_{date.today()}.pdf",
+                               mime="application/pdf", use_container_width=True, key="dl_unsigned")
+            if _signed_bytes:
+                st.download_button("✅ Download Signed Telephony Pack", data=_signed_bytes, file_name=f"SYComms_{safe}_SIGNED_{date.today()}.pdf",
+                                   mime="application/pdf", use_container_width=True, key="dl_signed_tele")
+        if _two and not cs_crm_missing:
+            st.markdown("**Combined pack - blank signature boxes**")
+            try:
+                st.download_button("📦 Combined pack - blank (for review or Zoho Sign)", data=build_combined(_unsigned_bytes),
+                                   file_name=f"Combined_Pack_{safe}_{date.today()}.pdf", mime="application/pdf",
+                                   use_container_width=True, key="dl_comb_blank")
+            except Exception as _cse:
+                st.error(f"Couldn't build the combined pack: {_cse}")
 
         if cs_active:
             st.divider()
@@ -9884,33 +9881,6 @@ with tab6:
                 except Exception as _e:
                     st.error(f"Couldn't build the Shire agreement: {_e}")
 
-        if n_packs() >= 2 and not cs_crm_missing:
-            st.divider()
-            st.markdown("#### 📦 Combined pack - everything in one file")
-            st.caption("The telephony, Call Scope and SteadyTemp packs that are on this deal, joined end to end. The blank one is for Zoho Sign; once the signature and name are saved on the left, the signed version below puts them on every pack at once - just as the telephony signed pack does.")
-            try:
-                st.download_button("📦 Combined pack - blank signature boxes (for Zoho Sign)",
-                                   data=build_combined(_unsigned_bytes), file_name=f"Combined_Pack_{safe}_{date.today()}.pdf",
-                                   mime="application/pdf", use_container_width=True, key="dl_comb_blank")
-                if sig_bytes and sig_name and (_cis_done or not _tele_any):
-                    _sgx = {"sig_bytes": sig_bytes, "name": sig_name, "company": comp_name or "", "ts": _ts, "ip": _client_ip}
-                    _tele_signed = build_pdf(sig_bytes=sig_bytes, sig_name=sig_name, sig_company=comp_name or "", sig_timestamp=_ts, sig_ip=_client_ip,
-                                             sign_proposal=True, curr_total=current_total, curr_bb=current_bb, curr_system=current_system,
-                                             curr_calls=current_calls, curr_mobile=current_mobile) if _tele_any else None
-                    st.download_button("✅ Combined pack - signed now",
-                                       data=build_combined(_tele_signed, _sgx),
-                                       file_name=f"Combined_Pack_{safe}_SIGNED_{date.today()}.pdf", mime="application/pdf",
-                                       use_container_width=True, type="primary", key="dl_comb_signed")
-                else:
-                    _why = []
-                    if _tele_any and not _cis_done: _why.append("tick 'Step 1 complete' above")
-                    if not sig_bytes: _why.append("save the signature")
-                    if not sig_name: _why.append("type the customer name")
-                    st.button("✅ Combined pack - signed now", disabled=True, use_container_width=True, key="dl_comb_signed_dis")
-                    st.caption("To unlock the signed combined pack: " + ", ".join(_why) + ".")
-            except Exception as _cse:
-                st.error(f"Couldn't build the combined pack: {_cse}")
-
         if _loa_data()["on"] and _loa_data()["numbers"]:
             st.divider()
             st.markdown("**Letter of Authority (for the old provider)**")
@@ -9929,9 +9899,8 @@ with tab6:
 
     st.divider()
     st.markdown("### ✍️ Send via Zoho Sign")
-    st.caption("Step 1: upload the Contract Information Sheet to Zoho Sign and send it for signature. "
-               "Step 2: once it is signed, upload the full pack (its 'Agreement to proceed' box stays blank for Zoho Sign too). "
-               "If Call Scope or SteadyTemp air conditioning is on the deal, each has its own separate pack, sent for signature on its own (or use the combined pack).")
+    st.caption("Follow the six signing steps above. The Contract Information Sheet goes to Zoho Sign first; once it is signed, the signed pack "
+               "(combined, if Call Scope or air conditioning is on the deal) goes with its single 'Agreement to proceed' box left blank.")
     st.link_button("Open Zoho Sign →", "https://sign.zoho.eu", use_container_width=False)
 
 if _show_admin:
