@@ -511,7 +511,7 @@ def _default_config():
             {"name": "GWN7660 WiFi AP (WiFi6)",      "buy": 58.00},
             {"name": "GWN7664E Outdoor WiFi AP",     "buy": 95.00},
             {"name": "GWN7604 Compact Switch",       "buy": 44.00},
-            {"name": "Grandstream HT802 ATA",        "buy": 33.00},
+            {"name": "Grandstream HT812 ATA",        "buy": 33.00},
             {"name": "Grandstream 4 Port ATA",       "buy": 80.00},
             {"name": "Grandstream 8 Port ATA",       "buy": 117.00},
             {"name": "Grandstream 24 Port ATA",      "buy": 300.00},
@@ -819,7 +819,7 @@ for _n, _rel in {
  "HIK Vision Dome 8MP": "products/hik_vision_dome_8mp.jpg",
  "HIK Vision 24TB NVR": "products/hik_vision_24tb_nvr.jpg",
  "Grandstream GSC3518HS SIP Horn Speaker": "products/grandstream_gsc3518hs_sip_horn_speaker.jpg",
- "Grandstream HT802 ATA": "products/grandstream_ht802_ata.jpg"
+ "Grandstream HT812 ATA": "products/grandstream_ht802_ata.jpg"
 }.items():
     _b = _asset_b64(_rel)
     if _b:
