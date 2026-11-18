@@ -779,7 +779,7 @@ _QUOTE_EXTRA = {
     "c_desired_rental", "c_svc_disc", "c_bb_disc", "c_cs_disc", "c_ac_disc", "c_notes_val",                       # consultant: target rental, discount, special conditions
     "router_mode", "switch_mode", "add_wired_ports", "standalone_softphones_key",
     "cs_ai_portal_free",
-    "adm_bb_override", "adm_override_upfront", "adm_override_install", "adm_cp_json", "adm_maint_optout",  # manager per-deal overrides
+    "adm_bb_override", "adm_override_upfront", "adm_override_install", "adm_cp_json", "adm_xm_json", "adm_maint_optout",  # manager per-deal overrides
     "adm_credits_months", "adm_credits_amount", "adm_cashback", "mgr_cust", "mgr_init",
 }
 _QUOTE_EXCLUDE = {
@@ -4169,6 +4169,8 @@ def build_proposal_pdf(sign=None, cis=False):
         if _r.get("qty", 0) > 0:
             svc_rows.append((f"Mobile - {mobile_label(_r)} x{_r['qty']}",
                              f"{gbp(_r['sell'] * _r['qty'])}/mo", False))
+    for _d_, _a_ in XM_ROWS:
+        svc_rows.append((_d_, f"{gbp(_a_)}/mo", False))
     if printer_rows:
         svc_rows.append((f"Printer lease - {printer_count} printer(s), {printer_term} months", f"{gbp(printer_monthly)}/mo", False))
         svc_rows.append((f"Printing (est. {sum(_r['volume'] for _r in printer_rows):,} prints/month)",
@@ -4683,6 +4685,8 @@ def _build_pdf_core(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='
     for _r in mobile_rows:
         if _r.get("qty", 0) > 0:
             _cs_lines.append((f"Mobile - {mobile_label(_r)} x{_r['qty']}", _r["sell"] * _r["qty"]))
+    for _d_, _a_ in XM_ROWS:
+        _cs_lines.append((_d_, _a_))
     if is_spread:
         _cs_lines.append(((f"System rental over {_cs_term_lbl}" if is_inhouse else f"Hardware (equipment lease over {_cs_term_lbl})"), hw_monthly_spread))
     if printer_rows:
@@ -5132,6 +5136,8 @@ def _build_pdf_core(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='
             svc_items.append((s(f"Mobile - {mobile_label(_mr)}"), _mr["qty"],
                               f"£{_mr['sell']*_mr['qty']:.2f}/mo"))
 
+    for _d_, _a_ in XM_ROWS:
+        svc_items.append((s(_d_), 1, f"£{_a_:.2f}/mo"))
     pdf.set_fill_color(31, 20, 80)
     pdf.set_text_color(255, 255, 255)
     pdf.cell(100, 6, "Service", fill=True, ln=False)
@@ -7667,6 +7673,14 @@ def _cp_saved():
     except Exception:
         return {}
 
+def _xm_saved():
+    """Extra monthly charges the admin has added to this deal: [(description, £/mo)] - out-of-scope extras shown to the customer."""
+    try:
+        _d = json.loads(st.session_state.get("adm_xm_json") or "[]")
+        return [(str(x[0]).strip() or "Additional monthly charge", round(float(x[1]), 2)) for x in _d if float(x[1]) > 0]
+    except Exception:
+        return []
+
 def compute_hw_sell(uplift_pct=None, apply_ov=True):
     """Compute total hardware sell value.
     Falls back to buy x (1 + uplift/100) for items without a sell price.
@@ -7829,7 +7843,7 @@ def build_comparison_rows():
         ("Call Scope",                0.0,             svc.get("cs_sell", 0.0)),
         ("System Security",           0.0,             svc.get("sec_sell", 0.0)),
         ("Printing / copiers",        current_printing, printer_monthly + printer_print_est_mo),
-        ("Other",                     current_other,   0.0),
+        ("Other",                     current_other,   svc.get("xm_sell", 0.0)),
     ]
     rows = [(l, round(cv, 2), round(nv, 2)) for l, cv, nv in _cmp if cv > 0.004 or nv > 0.004]
     _cur_gap = round(current_total - sum(r[1] for r in rows), 2)
@@ -8071,6 +8085,9 @@ for _ck, _sk in (("bb2", "bb2_sell"), ("wall", "wallboard_mo"), ("mob", "mobile_
             _sw_new = {r["n"]: r["sell"] for r in _swr}
             SW_ADDONS = [(n_, q_, c_, _sw_new.get(n_, s_) if q_ > 0 else s_) for n_, q_, c_, s_ in SW_ADDONS]
             sw_sell_total = _n
+XM_ROWS = _xm_saved()
+svc["xm_sell"] = round(sum(a for _, a in XM_ROWS), 2)
+_cp_delta += svc["xm_sell"]
 if _cp_delta:
     svc["total_sell"] = svc["total_sell"] + _cp_delta
     _total_list_pre   = _total_list_pre + _cp_delta
@@ -9024,6 +9041,8 @@ with tab4:
             if r["qty"] > 0:
                 svc_lines.append((f"Mobile - {mobile_label(r)} x{r['qty']}",
                                   f"£{r['sell'] * r['qty']:.2f}/mo"))
+        for _d_, _a_ in XM_ROWS:
+            svc_lines.append((_d_, f"£{_a_:.2f}/mo"))
         if printer_rows:
             svc_lines.append((f"Printer lease - {printer_count} printer(s) over {printer_term} months", f"£{printer_monthly:.2f}/mo"))
             for _r in printer_rows:
@@ -10253,8 +10272,13 @@ if _show_admin:
                         if _v is not None:
                             _d[_k] = float(_v)
                     st.session_state["adm_cp_json"] = json.dumps(_d)
+                    st.session_state["adm_xm_json"] = json.dumps([[st.session_state.get(f"cpx_desc_{_i}", ""), float(st.session_state.get(f"cpx_amt_{_i}", 0) or 0)]
+                                                                  for _i in range(3) if float(st.session_state.get(f"cpx_amt_{_i}", 0) or 0) > 0])
                 def _cpf_reset():
                     st.session_state["adm_cp_json"] = ""
+                    st.session_state["adm_xm_json"] = ""
+                    for _i in range(3):
+                        st.session_state.pop(f"cpx_desc_{_i}", None); st.session_state.pop(f"cpx_amt_{_i}", None)
                     for _k in _CP_KEYS:
                         st.session_state.pop(f"cpf_{_k}", None)
                 _auto_hw  = compute_hw_sell(apply_ov=False)
@@ -10284,6 +10308,17 @@ if _show_admin:
                                 st.number_input(f"{_l} (£/mo) - now £{_cp_auto[_k]:,.2f}", min_value=0.0, step=1.0,
                                                 value=_sv.get(_k), key=f"cpf_{_k}", format="%.2f",
                                                 help="Type the monthly price the customer should pay for all of this. The lines on the paperwork are scaled to add up to it.")
+                    st.markdown("**Extra monthly charges (out-of-scope extras, shown to the customer)**")
+                    st.caption("Type a description and a monthly price. Each one is added to the customer's monthly total and listed on the proposal, order form and Customer View.")
+                    _xs = _xm_saved()
+                    for _i in range(3):
+                        _x1, _x2 = st.columns([3, 1])
+                        with _x1:
+                            st.text_input(f"Description {_i + 1}", value=(_xs[_i][0] if _i < len(_xs) else ""), key=f"cpx_desc_{_i}",
+                                          placeholder="e.g. Additional remote support")
+                        with _x2:
+                            st.number_input(f"£ per month {_i + 1}", min_value=0.0, step=5.0, value=(float(_xs[_i][1]) if _i < len(_xs) else 0.0),
+                                            key=f"cpx_amt_{_i}", format="%.2f")
                     if cs_active or ac_active:
                         st.markdown("**Call Scope and air conditioning (their own agreements)**")
                         x1, x2 = st.columns(2)
