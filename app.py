@@ -2281,6 +2281,105 @@ _sw_studio_on = False
 sw_acd_qty = 0
 sw_ctd_qty = sw_wallboard_qty = 0
 
+# ─── CLOUD SAVED DEALS (a private GitHub repo that holds saved quote files) ───────────────
+# Streamlit Secrets needs:   [saved_deals]   token = "ghp_..."   repo = "owner/SYComms-Saved-Deals"   (branch = "main" is optional)
+# Every save makes a NEW file (version 1, 2, 3 ...), so earlier versions of a customer's deal are never overwritten.
+def _sd_cfg():
+    try:
+        _s = st.secrets.get("saved_deals")
+        if _s and _s.get("token") and _s.get("repo"):
+            return {"token": str(_s["token"]), "repo": str(_s["repo"]).strip().strip("/"), "branch": str(_s.get("branch", "main") or "main")}
+    except Exception:
+        pass
+    return None
+
+def _sd_hdr(cfg, raw=False):
+    return {"Authorization": "Bearer " + cfg["token"], "X-GitHub-Api-Version": "2022-11-28",
+            "Accept": "application/vnd.github.raw+json" if raw else "application/vnd.github+json"}
+
+def _sd_slug(s, keep="-"):
+    return re.sub(r"[^a-z0-9" + re.escape(keep) + r"]+", "_", str(s or "").lower()).strip("_") or "x"
+
+def _sd_owner():
+    """Who the saved deal belongs to: the logged-in consultant's email (or their name when the shared password is used)."""
+    _cu = st.session_state.get("current_user") or {}
+    return _sd_slug(_cu.get("email") or st.session_state.get("q_rep_name") or "shared", keep="@.-").replace("@", "_at_")
+
+def _sd_is_admin():
+    _cu = st.session_state.get("current_user")
+    return (_cu.get("role") == "admin") if _cu else bool(st.session_state.get("admin_unlocked"))
+
+_SD_FILE = re.compile(r"^(?P<cust>.+)_v(?P<ver>\d+)_(?P<ts>\d{8}-\d{4})\.json$")
+
+def _sd_list(cfg):
+    """All saved deals the person may see: [{path, owner, customer, version, ts}] - newest first."""
+    r = _req.get(f"https://api.github.com/repos/{cfg['repo']}/git/trees/{cfg['branch']}?recursive=1", headers=_sd_hdr(cfg), timeout=20)
+    if r.status_code == 404:
+        raise RuntimeError("Couldn't find the saved-deals repo or branch - check the repo name in Streamlit Secrets.")
+    if r.status_code in (401, 403):
+        raise RuntimeError("GitHub refused the token - check it is valid and has access to the saved-deals repo.")
+    r.raise_for_status()
+    me, admin, out = _sd_owner(), _sd_is_admin(), []
+    for it in r.json().get("tree", []):
+        p = it.get("path", "")
+        parts = p.split("/")
+        if len(parts) != 3 or parts[0] != "deals" or it.get("type") != "blob":
+            continue
+        m = _SD_FILE.match(parts[2])
+        if not m or (not admin and parts[1] != me):
+            continue
+        out.append({"path": p, "owner": parts[1], "customer": m["cust"], "version": int(m["ver"]), "ts": m["ts"]})
+    out.sort(key=lambda d: (d["ts"], d["version"]), reverse=True)
+    return out
+
+def _sd_save(cfg, snapshot):
+    """Save as the next version for this consultant + customer. Returns (version, path)."""
+    cust = _sd_slug(snapshot.get("q_comp_name") or "")
+    if cust == "x":
+        raise RuntimeError("Add a customer name first - the deal is saved under it.")
+    owner = _sd_owner()
+    existing = [d for d in _sd_list_owner(cfg, owner) if d["customer"] == cust]
+    ver = max([d["version"] for d in existing] + [0]) + 1
+    stamp = datetime_now_stamp()
+    path = f"deals/{owner}/{cust}_v{ver}_{stamp}.json"
+    _cu = st.session_state.get("current_user") or {}
+    wrapper = {"_saved_deal": 1, "meta": {"customer": snapshot.get("q_comp_name", ""), "version": ver, "saved_by": _cu.get("name") or st.session_state.get("q_rep_name", ""),
+               "owner": owner, "saved_at": stamp, "brand": snapshot.get("_quote_brand", "")}, "quote": snapshot}
+    body = {"message": f"Save {cust} v{ver} ({owner})", "branch": cfg["branch"],
+            "content": base64.b64encode(json.dumps(wrapper, indent=1, default=str).encode()).decode()}
+    r = _req.put(f"https://api.github.com/repos/{cfg['repo']}/contents/{path}", headers=_sd_hdr(cfg), json=body, timeout=30)
+    if r.status_code in (401, 403, 404):
+        raise RuntimeError("GitHub wouldn't accept the save - check the token can write to the saved-deals repo.")
+    r.raise_for_status()
+    return ver, path
+
+def _sd_list_owner(cfg, owner):
+    r = _req.get(f"https://api.github.com/repos/{cfg['repo']}/contents/deals/{owner}?ref={cfg['branch']}", headers=_sd_hdr(cfg), timeout=20)
+    if r.status_code == 404:
+        return []
+    r.raise_for_status()
+    out = []
+    for it in r.json():
+        m = _SD_FILE.match(it.get("name", ""))
+        if m:
+            out.append({"customer": m["cust"], "version": int(m["ver"])})
+    return out
+
+def datetime_now_stamp():
+    from datetime import datetime as _dt
+    return _dt.now().strftime("%Y%m%d-%H%M")
+
+def _sd_load(cfg, path):
+    r = _req.get(f"https://api.github.com/repos/{cfg['repo']}/contents/{path}?ref={cfg['branch']}", headers=_sd_hdr(cfg, raw=True), timeout=30)
+    r.raise_for_status()
+    d = r.json()
+    return d.get("quote", d) if isinstance(d, dict) else d
+
+def _sd_label(d, admin):
+    _t = d["ts"]
+    _when = f"{_t[6:8]}/{_t[4:6]}/{_t[0:4]} {_t[9:11]}:{_t[11:13]}"
+    return f"{d['customer'].replace('_', ' ').title()} - version {d['version']} - {_when}" + (f" - {d['owner']}" if admin else "")
+
 # ─── QUOTE SAVE / LOAD ───────────────────────────────────────────────────────
 with st.expander("💾 Save / Load Quote", expanded=False):
     ql_col1, ql_col2, ql_col3 = st.columns(3)
@@ -2340,6 +2439,51 @@ with st.expander("💾 Save / Load Quote", expanded=False):
                 st.rerun()
             except Exception as e:
                 st.error(f"Could not load config: {e}")
+
+    # ── Cloud saved deals ──
+    st.divider()
+    st.markdown("**☁️ Saved deals (cloud)**")
+    _sdc = _sd_cfg()
+    if not _sdc:
+        st.caption("Cloud saving isn't switched on yet - add the saved-deals token and repo to Streamlit Secrets (see the setup notes).")
+    else:
+        st.caption("Save this deal to the shared store, or bring back one of " + ("everyone's" if _sd_is_admin() else "your own") +
+                   " saved deals with every figure. Saving again makes a new version - earlier ones are kept.")
+        _c1, _c2 = st.columns(2)
+        with _c1:
+            if st.button("☁️ Save this deal to the cloud", use_container_width=True, key="sd_save_btn"):
+                try:
+                    _v, _p = _sd_save(_sdc, quote_snapshot())
+                    st.session_state["_sd_msg"] = f"✅ Saved as version {_v} for {st.session_state.get('q_comp_name', '')}."
+                    st.session_state.pop("_sd_items", None)
+                except Exception as _e:
+                    st.session_state["_sd_msg"] = f"❌ Couldn't save: {_e}"
+            if st.session_state.get("_sd_msg"):
+                st.info(st.session_state["_sd_msg"])
+        with _c2:
+            if st.button("🔄 Show saved deals", use_container_width=True, key="sd_list_btn"):
+                try:
+                    st.session_state["_sd_items"] = _sd_list(_sdc)
+                    st.session_state["_sd_err"] = ""
+                except Exception as _e:
+                    st.session_state["_sd_items"] = []
+                    st.session_state["_sd_err"] = f"Couldn't get the list: {_e}"
+        if st.session_state.get("_sd_err"):
+            st.error(st.session_state["_sd_err"])
+        _items = st.session_state.get("_sd_items")
+        if _items is not None and not st.session_state.get("_sd_err"):
+            _q = st.text_input("Search saved deals", key="sd_search", placeholder="customer name...")
+            _shown = [d for d in _items if _q.strip().lower() in (d["customer"] + " " + d["owner"]).replace("_", " ").lower()] if _q.strip() else _items
+            if not _shown:
+                st.caption("No saved deals found.")
+            else:
+                _pick = st.selectbox("Saved deal", range(len(_shown)), format_func=lambda i: _sd_label(_shown[i], _sd_is_admin()), key="sd_pick")
+                if st.button("📂 Load this deal", use_container_width=True, key="sd_load_btn"):
+                    try:
+                        st.session_state["_pending_quote"] = _sd_load(_sdc, _shown[_pick]["path"])
+                        st.rerun()
+                    except Exception as _e:
+                        st.error(f"Couldn't load that deal: {_e}")
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  ❄️ AIR CONDITIONING  (the SteadyTemp price book, added as an extra offering)
