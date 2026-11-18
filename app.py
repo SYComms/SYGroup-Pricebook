@@ -5371,11 +5371,16 @@ def _build_pdf_core(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='
     pdf.add_page()
     _add_header(pdf, "Direct Debit Mandate & Customer Checklist")
 
-    if bank_name or acc_no:
+    if True:      # always printed - with no bank details entered it is a blank mandate the customer can complete themselves
+        _blank_dd = not (bank_name or acc_no)
+        _bl = "______________________"
         pdf.set_font("Helvetica", "B", 11)
         pdf.cell(0, 6, "Direct Debit Banking Mandate", ln=True)
-        row2("Bank Name:", _bank or "-", "Account Holder:", _holder or "-")
-        row2("Account Number:", _accno or "-", "Sort Code:", _sort or "-")
+        if _blank_dd:
+            pdf.set_font("Helvetica", "I", 8)
+            pdf.cell(0, 5, "Please complete your bank details below and sign.", ln=True)
+        row2("Bank Name:", _bank or _bl, "Account Holder:", _holder or _bl)
+        row2("Account Number:", _accno or _bl, "Sort Code:", _sort or _bl)
         pdf.ln(3)
         pdf.set_font("Helvetica", "", 8)
         pdf.set_x(pdf.l_margin)
