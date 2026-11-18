@@ -7656,7 +7656,8 @@ def compute_hw_buy():
             total += ROUTERS[router_type]
     return total
 
-_CP_KEYS = ("lic", "bb1", "sysrent", "cs", "ac", "accash", "hw", "inst", "bbinst", "desk", "cord", "hs", "other", "switch", "router")
+_CP_KEYS = ("lic", "bb1", "sysrent", "cs", "ac", "accash", "hw", "inst", "bbinst", "desk", "cord", "hs", "other", "switch", "router",
+           "bb2", "wall", "mob", "sw", "sec", "it", "prn")
 
 def _cp_saved():
     """Saved manager overrides of what the customer is charged (Admin - Per-Deal Overrides - Customer prices)."""
@@ -8030,12 +8031,46 @@ if svc_disc_pct > 0 or bb_disc_pct > 0 or cs_disc_pct > 0:
 _cp = _cp_saved()
 _cp_auto = {"sysrent": 0.0, "lic": float(svc["lic_monthly"]), "bb1": float(svc["bb1_sell"]), "cs": float(cs_auto_monthly),
             "ac": float(ac_quote["calc_rental"]) if ac_quote else 0.0, "accash": float(ac_quote["cash_list"]) if ac_quote else 0.0}
+_cp_auto.update({"bb2": float(svc["bb2_sell"]), "wall": float(svc.get("wallboard_mo", 0.0)), "mob": float(svc.get("mobile_sell", 0.0)),
+                 "sw": float(svc.get("sw_sell", 0.0)), "sec": float(svc.get("sec_sell", 0.0)), "it": float(svc.get("it_sell", 0.0)), "prn": 0.0})
+def _cp_rescale(rows, target):
+    """Spread a forced monthly total across the line items so every document shows lines that add up to it exactly."""
+    _tot = sum(r["sell"] * r["qty"] for r in rows)
+    if _tot <= 0 or not rows:
+        return
+    _k = target / _tot
+    for r in rows:
+        r["sell"] = round(r["sell"] * _k, 2)
+    _diff = round(target - sum(r["sell"] * r["qty"] for r in rows), 2)
+    if abs(_diff) >= 0.005:
+        _one = next((r for r in rows if r["qty"] == 1), None)
+        if _one is not None:
+            _one["sell"] = round(_one["sell"] + _diff, 2)
+        else:
+            rows[0]["sell"] = round(rows[0]["sell"] + _diff / rows[0]["qty"], 2)
 _cp_delta = 0.0
 if _cp.get("lic") is not None:
     _n = round(float(_cp["lic"]), 2); _cp_delta += _n - svc["lic_monthly"]; svc["lic_monthly"] = _n
 if _cp.get("bb1") is not None:
     _n = round(float(_cp["bb1"]), 2); _cp_delta += _n - svc["bb1_sell"]; svc["bb1_sell"] = _n
     svc["bb_sell"] = svc["bb1_sell"] + svc["bb2_sell"]
+for _ck, _sk in (("bb2", "bb2_sell"), ("wall", "wallboard_mo"), ("mob", "mobile_sell"), ("sw", "sw_sell"), ("sec", "sec_sell"), ("it", "it_sell")):
+    if _cp.get(_ck) is not None and float(svc.get(_sk, 0) or 0) > 0:          # only where the deal actually has that item
+        _n = round(float(_cp[_ck]), 2); _cp_delta += _n - float(svc[_sk]); svc[_sk] = _n
+        if _ck == "bb2":
+            svc["bb_sell"] = svc["bb1_sell"] + svc["bb2_sell"]
+        elif _ck == "mob":
+            _cp_rescale(mobile_rows, _n)
+        elif _ck == "sec":
+            _cp_rescale(sec_rows, _n)
+        elif _ck == "it":
+            _cp_rescale(it_rows, _n)
+        elif _ck == "sw":
+            _swr = [{"sell": s_, "qty": q_, "n": n_, "c": c_} for n_, q_, c_, s_ in SW_ADDONS if q_ > 0]
+            _cp_rescale(_swr, _n)
+            _sw_new = {r["n"]: r["sell"] for r in _swr}
+            SW_ADDONS = [(n_, q_, c_, _sw_new.get(n_, s_) if q_ > 0 else s_) for n_, q_, c_, s_ in SW_ADDONS]
+            sw_sell_total = _n
 if _cp_delta:
     svc["total_sell"] = svc["total_sell"] + _cp_delta
     _total_list_pre   = _total_list_pre + _cp_delta
@@ -8177,6 +8212,9 @@ _prn_sr              = float(LEASE_RATES.get(printer_term) or LEASE_RATES.get(60
 _prn_tr              = float(TRUE_LEASE_RATES.get(printer_term) or TRUE_LEASE_RATES.get(60) or 21.01)
 printer_monthly      = round(printer_capital * _prn_sr / 1000.0, 2)
 printer_print_est_mo = round(sum(_r["print_mo"] for _r in printer_rows), 2)
+_cp_auto["prn"] = round(printer_monthly + printer_print_est_mo, 2)
+if _cp_saved().get("prn") is not None and printer_rows:          # manager's forced printing price (lease + estimated prints); profit follows it
+    printer_monthly = round(max(0.0, float(_cp_saved()["prn"]) - printer_print_est_mo), 2)
 printer_funder       = round(printer_monthly / _prn_tr * 1000.0, 2) if _prn_tr else 0.0
 printer_cost_total   = round(sum(_r["cost"] * _r["qty"] for _r in printer_rows) + PRINTER_SETUP_COST * printer_count, 2)
 printer_lease_profit = round(printer_funder - printer_cost_total, 2)
@@ -10235,6 +10273,17 @@ if _show_admin:
                         st.number_input(f"{'System rental' if is_inhouse else 'Hardware rental'} (£/mo) - now £{_cp_auto.get('sysrent', 0):,.2f}",
                                         min_value=0.0, step=1.0, value=_sv.get("sysrent"), key="cpf_sysrent", format="%.2f",
                                         help="What the customer pays each month for the hardware. Beats the consultant's target. Profit and commission follow it - even if it makes a loss.")
+                    _more_items = [("bb2", "Extra broadband lines"), ("mob", "Mobiles"), ("sw", "Software add-ons"), ("wall", "Wallboard"),
+                                   ("sec", "System security"), ("it", "IT services / M365"), ("prn", "Printing (lease + prints)")]
+                    _more_items = [(k_, l_) for k_, l_ in _more_items if _cp_auto.get(k_, 0) > 0]
+                    if _more_items:
+                        st.markdown("**Other monthly services on this deal**")
+                        _mc = st.columns(2)
+                        for _i, (_k, _l) in enumerate(_more_items):
+                            with _mc[_i % 2]:
+                                st.number_input(f"{_l} (£/mo) - now £{_cp_auto[_k]:,.2f}", min_value=0.0, step=1.0,
+                                                value=_sv.get(_k), key=f"cpf_{_k}", format="%.2f",
+                                                help="Type the monthly price the customer should pay for all of this. The lines on the paperwork are scaled to add up to it.")
                     if cs_active or ac_active:
                         st.markdown("**Call Scope and air conditioning (their own agreements)**")
                         x1, x2 = st.columns(2)
