@@ -642,7 +642,18 @@ def _migrate_call_scope_prices(cfg):
     cfg.setdefault("constants", {}).setdefault("cs_min_buy", 0.10)
     cfg["constants"].setdefault("cs_min_sell", 0.25)
     cfg["_cs_price_v"] = 1
+def _migrate_call_scope_reseller(cfg):
+    """One-off (flagged in the config): Call Scope is now sold on a reseller model - new buy prices agreed 18 Nov 2026."""
+    if cfg.get("_cs_price_v", 0) >= 2:
+        return
+    svc = cfg.setdefault("call_scope_services", [])
+    for n, (b, s) in {"AI Receptionist": (25.0, 89.0), "AI Integration - Portal": (18.0, 49.0)}.items():
+        row = next((r for r in svc if r.get("name") == n), None)
+        if row: row["buy"], row["sell"] = b, s
+        else:   svc.append({"name": n, "buy": b, "sell": s})
+    cfg["_cs_price_v"] = 2
 _migrate_call_scope_prices(st.session_state.active_config)
+_migrate_call_scope_reseller(st.session_state.active_config)
 def _migrate_lease_84_funder(cfg):
     """One-off: 7-year funder rate 16.46 (only where no funder rate has been entered for that row)."""
     if cfg.get("_lr84_v", 0) >= 1:
@@ -982,11 +993,11 @@ def cs_card_html(label, img_name, qty=0, img_height=80):
 
 
 _CS_SERVICES_DEFAULT = [
-    {"name": "AI Integration - Portal", "buy": 5.00,  "sell": 32.00},
+    {"name": "AI Integration - Portal", "buy": 18.00,  "sell": 49.00},
     {"name": "AI Integration - CRM",    "buy": 5.00,  "sell": 35.00},
     {"name": "Manager Dashboard",        "buy": 5.00,  "sell": 59.00},
     {"name": "Call Score",               "buy": 20.00, "sell": 45.00},
-    {"name": "AI Receptionist",          "buy": 69.00, "sell": 89.00},
+    {"name": "AI Receptionist",          "buy": 25.00, "sell": 89.00},
 ]
 CS_CARD_NAMES = ("AI Receptionist", "AI Integration - CRM")      # shown as cards under the DECT & Wireless Phones section
 CS_DISPLAY_NAMES = {"AI Integration - CRM": "AI CRM Integration"}   # the name the customer sees
@@ -3523,11 +3534,11 @@ with col_hw2:
 # ─── POST-EXPANDER REBUILDS (session state → module-level lists) ─────────────
 # Call Scope services
 cs_cfg_mod = st.session_state.active_config.get("call_scope_services", [
-    {"name": "AI Integration - Portal", "buy": 5.00, "sell": 32.00},
+    {"name": "AI Integration - Portal", "buy": 18.00, "sell": 49.00},
     {"name": "AI Integration - CRM", "buy": 5.00, "sell": 35.00},
     {"name": "Manager Dashboard", "buy": 5.00, "sell": 59.00},
     {"name": "Call Score", "buy": 20.00, "sell": 45.00},
-    {"name": "AI Receptionist", "buy": 69.00, "sell": 89.00},
+    {"name": "AI Receptionist", "buy": 25.00, "sell": 89.00},
 ])
 # ─── LETTER OF AUTHORITY (number porting) ─────────────────────────────────────
 _LOA_PAGES = {}     # first/last page numbers of the LOA inside the core pack (used to cut out a stand-alone copy)
@@ -6853,8 +6864,13 @@ def discount_steps(discount, years, style="stepped"):
     return [r2(d * (years - 1 - i) / (years - 1)) for i in range(years)]
 
 
+def _disc_unit(m, d, floor=True):
+    """Unit price after discount d% - never below what it costs us (unless floor is off)."""
+    u = r2(m["rrp"] * (1 - d / 100))
+    return max(u, r2(m["buy"])) if floor and m.get("buy") else u
+
 def customer_quote(cfg, qty, minutes=0, agent_setups=0, term=60, discount=0.0, style="stepped",
-                   review_pct=None, setup_mode="invoice"):
+                   review_pct=None, setup_mode="invoice", floor=True):
     mods = cfg["modules"]
     review = cfg["annual_review_pct"] if review_pct is None else float(review_pct)
     years = max(1, math.ceil(int(term) / 12))
@@ -6866,7 +6882,7 @@ def customer_quote(cfg, qty, minutes=0, agent_setups=0, term=60, discount=0.0, s
         if q <= 0:
             continue
         d = steps[0] if m.get("discountable", True) else 0.0
-        unit = r2(m["rrp"] * (1 - d / 100))
+        unit = _disc_unit(m, d, floor)
         lines.append({"id": m["id"], "name": m["name"], "unit_label": m.get("unit", ""), "qty": q,
                       "rrp": r2(m["rrp"]), "price": unit, "total": r2(unit * q), "buy": r2(m["buy"]),
                       "discountable": m.get("discountable", True)})
@@ -6884,7 +6900,7 @@ def customer_quote(cfg, qty, minutes=0, agent_setups=0, term=60, discount=0.0, s
     prev = None
     for y in range(years):
         d = steps[y]
-        mo = r2(sum((r2(l["rrp"] * (1 - d / 100)) if l["discountable"] else l["rrp"]) * l["qty"] for l in lines))
+        mo = r2(sum((_disc_unit(l, d, floor) if l["discountable"] else l["rrp"]) * l["qty"] for l in lines))
         mo_rev = r2(mo * (1 + review / 100) ** y)
         m_from = y * 12 + 1
         m_to = min(int(term), (y + 1) * 12)
@@ -7912,7 +7928,7 @@ bb2_list       = float(svc["bb2_sell"])
 sw_list_total  = float(sw_sell_total)               # undiscounted, for consultant display
 if cs_disc_pct > 0:
     for _r in cs_svc_rows:                       # discount the Call Scope rows themselves so every document agrees
-        _r["sell"] = round(_r["sell"] * _cs_mult, 2)
+        _r["sell"] = max(round(_r["sell"] * _cs_mult, 2), float(_r.get("buy") or 0))
     _cs_svc_sell = sum(r["sell"] * r["qty"] for r in cs_svc_rows)
     svc["cs_sell"] = _cs_svc_sell
 # ═══ CALL SCOPE ORDER - priced on its own, never added into the telephony totals, lease, P&L or paperwork ═══
@@ -7938,31 +7954,40 @@ if cs_order_rows:
     cs_target_note = ""
     _disc_tot = sum(m["rrp"] * m["qty"] for m in _cs_mods if m["discountable"])
     _fix_tot = sum(m["rrp"] * m["qty"] for m in _cs_mods if not m["discountable"])
-    def _cs_solve(tgt):
+    def _cs_total_at(_d, _floor=True):          # monthly total at discount _d%, each item held at or above its buy price when _floor
+        return round(_fix_tot + sum(max(round(m["rrp"] * (1 - _d / 100), 2), m["buy"] if _floor else 0.0) * m["qty"]
+                                    for m in _cs_mods if m["discountable"]), 2)
+    def _cs_solve(tgt, _floor=True):
         if _disc_tot <= 0:
             return None, "no discountable items"
-        _d = (1 - (tgt - _fix_tot) / _disc_tot) * 100
-        if _d < 0:
+        if tgt >= _cs_total_at(0.0, _floor):
             return 0.0, "above the standard price - quoted at standard"
-        if _d > 80:
-            return 80.0, "below the 80% discount limit - quoted at the lowest allowed"
-        return round(_d, 2), ""
+        if tgt <= _cs_total_at(80.0, _floor):
+            return 80.0, ("at the lowest price allowed (down to our buy price)" if _floor else "below the 80% discount limit - quoted at the lowest allowed")
+        _lo, _hi = 0.0, 80.0
+        for _ in range(40):
+            _mid = (_lo + _hi) / 2
+            if _cs_total_at(_mid, _floor) > tgt:
+                _lo = _mid
+            else:
+                _hi = _mid
+        return round(_hi, 2), ""
     _cs_tgt = float(st.session_state.get("cs_target_rental") or 0)
     if _cs_tgt > 0:
         _dd, cs_target_note = _cs_solve(_cs_tgt)
         if _dd is not None:
             cs_disc_eff = _dd
-    cs_auto_monthly = round(_fix_tot + _disc_tot * (1 - cs_disc_eff / 100.0), 2)     # before any admin override
+    cs_auto_monthly = _cs_total_at(cs_disc_eff)     # before any admin override
     _cs_ov = _cp_saved().get("cs")
     if _cs_ov is not None:
-        _dd, cs_target_note = _cs_solve(float(_cs_ov))
+        _dd, cs_target_note = _cs_solve(float(_cs_ov), False)      # an admin price may go below our buy price - their call
         if _dd is not None:
             cs_disc_eff = _dd
         cs_target_note = ("admin price: " + cs_target_note) if cs_target_note else ""
     cs_quote = _csx.customer_quote(
         _cs_cfgx, {m["id"]: m["qty"] for m in _cs_mods}, term=int(st.session_state.get("cs_term", 36) or 36),
         discount=cs_disc_eff, style=("fixed" if str(st.session_state.get("cs_style", "")).startswith("Fixed") else "stepped"),
-        review_pct=0.0, setup_mode=("waived" if st.session_state.get("cs_setup_waive") else "invoice"))
+        review_pct=0.0, setup_mode=("waived" if st.session_state.get("cs_setup_waive") else "invoice"), floor=(_cs_ov is None))
     for _l in cs_quote["lines"]:
         if _l["name"] == "AI Receptionist":
             _l["name"] = "AI Receptionist"
@@ -10501,11 +10526,11 @@ if _show_admin:
                 st.markdown("#### 🔮 Call Scope — Monthly Services")
                 st.caption("Per-user per-month charges. Buy = SY Comms wholesale cost. Sell = customer price.")
                 cs_svc_cfg = st.session_state.active_config.get("call_scope_services", [
-                    {"name": "AI Integration - Portal", "buy": 5.00,  "sell": 32.00},
+                    {"name": "AI Integration - Portal", "buy": 18.00,  "sell": 49.00},
                     {"name": "AI Integration - CRM",    "buy": 5.00,  "sell": 35.00},
                     {"name": "Manager Dashboard",        "buy": 5.00,  "sell": 59.00},
                     {"name": "Call Score",               "buy": 20.00, "sell": 45.00},
-                    {"name": "AI Receptionist",          "buy": 69.00, "sell": 89.00},
+                    {"name": "AI Receptionist",          "buy": 25.00, "sell": 89.00},
                 ])
                 cs_svc_cols = st.columns(4)
                 cs_svc_new = []
