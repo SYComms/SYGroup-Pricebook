@@ -1138,6 +1138,13 @@ if "_pending_quote" in st.session_state:
     if "c_notes" in _pq and "c_notes_val" not in _pq:      # quote files saved before this change
         _pq["c_notes_val"] = _pq.pop("c_notes")
     st.session_state.pop("c_notes_w", None)                 # so the notes box refills from the loaded value
+    # Clear the previous deal's admin overrides first, so nothing carries over unless the loaded deal has it
+    for _k in ("adm_bb_override", "adm_override_upfront", "adm_override_install", "adm_cp_json", "adm_xm_json", "adm_maint_optout",
+               "adm_credits_months", "adm_credits_amount", "adm_cashback"):
+        if _k not in _pq:
+            st.session_state.pop(_k, None)
+    for _k in [k for k in list(st.session_state.keys()) if str(k).startswith(("cpf_", "cpx_"))]:
+        st.session_state.pop(_k, None)                      # the admin price boxes refill from the loaded deal
     for _k, _v in _pq.items():
         if _k.startswith("_") or _k in _QUOTE_EXCLUDE:
             continue
