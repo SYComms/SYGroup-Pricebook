@@ -118,7 +118,7 @@ BRAND_CONFIGS = {
         "header":     "<span style=\'color:#0084c8\'>SY</span>&middot;PLUS",
         "pw_key":     "APP_PASSWORD_SYPLUS",
         "address":    "Suite C Jupiter House, Sitka Drive, Shrewsbury Business Park, Shrewsbury SY2 6LG",
-        "email":      "hello@syplus.co.uk",
+        "email":      "support@syplus.co.uk",
         "phone":      "03333 608280",
         "website":    "www.syplus.co.uk",
         "about":      "SY Plus is a locally owned and operated telecoms and IT services company ",
