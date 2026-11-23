@@ -138,7 +138,7 @@ BRAND_CONFIGS = {
         "pw_key":     "APP_PASSWORD_SWCOMMS",
         "address":    "Suite C Jupiter House, Sitka Drive, Shrewsbury Business Park, Shrewsbury SY2 6LG",
         "email":      "hello@swcomms.co.uk",
-        "phone":      "01792 004407",
+        "phone":      "01792 004439",
         "website":    "www.southwalestelecoms.co.uk",
         "about":      "SW Comms is a locally owned and operated telecoms and IT services company ",
     },
