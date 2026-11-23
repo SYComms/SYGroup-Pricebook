@@ -6339,8 +6339,15 @@ def _num(key, default=0.0):
 def _logo_stream():
     return io.BytesIO(LOGO_BYTES) if LOGO_BYTES else None
 
-NAVY, ACCENT, PALE = (4, 67, 174), (255, 101, 13), (232, 240, 251)      # SteadyTemp letterhead blue and orange
-DEEP = (0, 40, 105)                                                       # the dark blue of the letterhead footer
+# SteadyTemp brand pack (Oct 2026): Steady Blue is the only brand colour, everything else is neutral
+NAVY   = (11, 99, 246)      # Steady Blue  #0B63F6 - logo tile, rules, table bars
+ACCENT = (91, 155, 255)     # Sky Blue     #5B9BFF - small accents
+PALE   = (232, 240, 254)    # Blue Soft    #E8F0FE - tinted panels
+DEEP   = (10, 15, 26)       # Black        #0A0F1A - footer band, headlines
+INK    = (17, 24, 39)       # Ink          #111827 - paragraph text
+GREY   = (91, 100, 114)     # Grey         #5B6472 - secondary text
+FONT = "Helvetica"          # becomes Instrument Sans when assets/fonts is present
+FONT_FILES = {}             # {"": regular.ttf, "B": medium.ttf} - filled in by the pricebook
 
 def Q(key, default=""):
     v = QD.get(key, default)
@@ -6360,74 +6367,84 @@ def company_lines():
     return l1, l2
 
 class DocPDF(FPDF):
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        global FONT
+        FONT = "Helvetica"
+        try:
+            if FONT_FILES.get("") and FONT_FILES.get("B"):
+                for _st, _f in (("", FONT_FILES[""]), ("B", FONT_FILES["B"]), ("I", FONT_FILES[""]), ("BI", FONT_FILES["B"])):
+                    self.add_font("InstrumentSans", _st, _f)
+                FONT = "InstrumentSans"
+        except Exception:
+            FONT = "Helvetica"
+
     def footer(self):
-        """Letterhead-style footer: orange and blue bands with the company details."""
+        """Brand footer: Steady Blue line over a black band with the company details."""
         h = 14
         y = self.h - h
-        self.set_fill_color(*ACCENT); self.rect(0, y - 1.1, self.w, 1.1, "F")
+        self.set_fill_color(*NAVY); self.rect(0, y - 1.1, self.w, 1.1, "F")
         self.set_fill_color(*DEEP); self.rect(0, y, self.w, h, "F")
         l1, l2 = company_lines()
         self.set_text_color(255, 255, 255)
-        self.set_xy(10, y + 2.6); self.set_font("Helvetica", "B", 7.2); self.cell(self.w - 20, 3.8, s(l1), align="C")
-        self.set_xy(10, y + 6.6); self.set_font("Helvetica", "", 7); self.cell(self.w - 20, 3.8, s(l2), align="C")
+        self.set_xy(10, y + 2.6); self.set_font(FONT, "B", 7.2); self.cell(self.w - 20, 3.8, s(l1), align="C")
+        self.set_xy(10, y + 6.6); self.set_font(FONT, "", 7); self.cell(self.w - 20, 3.8, s(l2), align="C")
         if CO.get("legal_line"):
-            self.set_xy(10, y + 10); self.set_font("Helvetica", "I", 6); self.cell(self.w - 20, 3, s(CO["legal_line"]), align="C")
-        self.set_xy(self.w - 40, y - 5.5); self.set_font("Helvetica", "", 7); self.set_text_color(130, 140, 150)
+            self.set_xy(10, y + 10); self.set_font(FONT, "I", 6); self.cell(self.w - 20, 3, s(CO["legal_line"]), align="C")
+        self.set_xy(self.w - 40, y - 5.5); self.set_font(FONT, "", 7); self.set_text_color(*GREY)
         self.cell(30, 4, f"Page {self.page_no()} of {{nb}}", align="R")
-        self.set_text_color(0, 0, 0)
+        self.set_text_color(*INK)
 
 def doc_header(pdf, title, subtitle=""):
     """Letterhead-style page top: logo on the left, document title on the right, blue rule with an orange accent."""
     pdf.add_page()
     pdf.set_fill_color(*NAVY); pdf.rect(0, 0, pdf.w, 2.2, "F")
-    pdf.set_fill_color(*ACCENT); pdf.rect(0, 2.2, pdf.w * 0.38, 1.0, "F")
     lg = _logo_stream()
     title_y = 9
     if lg is not None:
         try:
-            pdf.image(lg, x=pdf.l_margin, y=7.5, h=15)
+            pdf.image(lg, x=pdf.l_margin, y=8.5, h=12)
         except Exception:
             lg = None
     if lg is None:
-        pdf.set_xy(pdf.l_margin, 9); pdf.set_font("Helvetica", "B", 18); pdf.set_text_color(*NAVY)
+        pdf.set_xy(pdf.l_margin, 9); pdf.set_font(FONT, "B", 18); pdf.set_text_color(*DEEP)
         pdf.cell(100, 9, s(CO["trading"]), ln=True)
-    pdf.set_xy(pdf.w - pdf.r_margin - 95, title_y); pdf.set_font("Helvetica", "B", 15); pdf.set_text_color(*NAVY)
+    pdf.set_xy(pdf.w - pdf.r_margin - 95, title_y); pdf.set_font(FONT, "B", 15); pdf.set_text_color(*DEEP)
     pdf.cell(95, 8, s(title), align="R", ln=True)
-    pdf.set_xy(pdf.w - pdf.r_margin - 95, title_y + 8); pdf.set_font("Helvetica", "", 8); pdf.set_text_color(90, 100, 110)
+    pdf.set_xy(pdf.w - pdf.r_margin - 95, title_y + 8); pdf.set_font(FONT, "", 8); pdf.set_text_color(*GREY)
     pdf.cell(95, 4.5, s(subtitle or "Air conditioning supplied, installed and supported"), align="R", ln=True)
     rep = Q("q_rep")
     if rep:
-        pdf.set_x(pdf.w - pdf.r_margin - 95); pdf.set_font("Helvetica", "I", 7.5)
+        pdf.set_x(pdf.w - pdf.r_margin - 95); pdf.set_font(FONT, "I", 7.5)
         pdf.cell(95, 4, s(f"Prepared by: {rep}"), align="R")
     pdf.set_draw_color(*NAVY); pdf.set_line_width(0.6); pdf.line(pdf.l_margin, 26, pdf.w - pdf.r_margin, 26)
-    pdf.set_draw_color(*ACCENT); pdf.set_line_width(0.6); pdf.line(pdf.w - pdf.r_margin - 30, 27.2, pdf.w - pdf.r_margin, 27.2)
     pdf.set_draw_color(0, 0, 0); pdf.set_line_width(0.2)
-    pdf.set_text_color(0, 0, 0)
+    pdf.set_text_color(*INK)
     pdf.set_y(32)
 
 def band(pdf, text):
     pdf.ln(2)
-    pdf.set_fill_color(*NAVY); pdf.set_text_color(255, 255, 255); pdf.set_font("Helvetica", "B", 9)
+    pdf.set_fill_color(*NAVY); pdf.set_text_color(255, 255, 255); pdf.set_font(FONT, "B", 9)
     pdf.cell(0, 6, "  " + s(text), fill=True, ln=True)
-    pdf.set_text_color(0, 0, 0)
+    pdf.set_text_color(*INK)
     pdf.ln(1)
 
 def para(pdf, text, size=8.5, h=4.4, align="J", style=""):
-    pdf.set_font("Helvetica", style, size)
+    pdf.set_font(FONT, style, size)
     pdf.set_x(pdf.l_margin)
     pdf.multi_cell(pdf.epw, h, s(text), align=align)
 
 def kv(pdf, label, value, lw=42):
-    pdf.set_font("Helvetica", "B", 8.5); pdf.set_text_color(90, 100, 110)
+    pdf.set_font(FONT, "B", 8.5); pdf.set_text_color(*GREY)
     pdf.cell(lw, 5.2, s(label), ln=False)
-    pdf.set_font("Helvetica", "", 8.5); pdf.set_text_color(0, 0, 0)
+    pdf.set_font(FONT, "", 8.5); pdf.set_text_color(*INK)
     pdf.cell(0, 5.2, s(value), ln=True)
 
 def company_block(pdf):
-    pdf.set_font("Helvetica", "", 7.5); pdf.set_text_color(70, 80, 90)
+    pdf.set_font(FONT, "", 7.5); pdf.set_text_color(*GREY)
     pdf.set_x(pdf.l_margin)
     pdf.multi_cell(pdf.epw, 3.8, s("  |  ".join(x for x in (CO["legal"], ", ".join(x for x in CO["addr"] if x), CO["reg"], CO["vat"]) if x)))
-    pdf.set_text_color(0, 0, 0)
+    pdf.set_text_color(*INK)
 
 def customer_block(pdf):
     band(pdf, "Customer details")
@@ -6444,9 +6461,9 @@ def customer_block(pdf):
 
 def equipment_table(pdf, C):
     band(pdf, "Equipment")
-    pdf.set_font("Helvetica", "B", 8); pdf.set_fill_color(*PALE)
+    pdf.set_font(FONT, "B", 8); pdf.set_fill_color(*PALE)
     pdf.cell(118, 5.5, "  Item", fill=True); pdf.cell(48, 5.5, "Type", fill=True); pdf.cell(0, 5.5, "Qty", fill=True, ln=True, align="C")
-    pdf.set_font("Helvetica", "", 8.5)
+    pdf.set_font(FONT, "", 8.5)
     shown = 0
     for it, q in C["qty"]:
         if it["group"] in ("Materials", "Labour"):
@@ -6456,13 +6473,13 @@ def equipment_table(pdf, C):
         pdf.cell(0, 5.4, str(q), border="B", ln=True, align="C")
         shown += 1
     if not shown:
-        pdf.set_text_color(160, 60, 60); pdf.cell(0, 6, "  (no equipment selected yet)", ln=True); pdf.set_text_color(0, 0, 0)
+        pdf.set_text_color(160, 60, 60); pdf.cell(0, 6, "  (no equipment selected yet)", ln=True); pdf.set_text_color(*INK)
 
 def sig_block(pdf, heading, sign, note=""):
     if pdf.get_y() > 243:
         pdf.add_page(); pdf.set_y(20)
     pdf.ln(3)
-    pdf.set_font("Helvetica", "B", 9); pdf.cell(0, 5, s(heading), ln=True)
+    pdf.set_font(FONT, "B", 9); pdf.cell(0, 5, s(heading), ln=True)
     y = pdf.get_y()
     if sign and sign.get("bytes"):
         try:
@@ -6483,14 +6500,14 @@ def sig_block(pdf, heading, sign, note=""):
     else:
         nm, ps = split_name_pos(Q("q_signatory"))
         when, co = "", Q("q_company")
-    pdf.set_font("Helvetica", "", 8.5)
+    pdf.set_font(FONT, "", 8.5)
     pdf.cell(95, 5, s(f"Name:  {nm or '____________________________'}"), ln=False)
     pdf.cell(0, 5, s(f"Date:  {when or '____ / ____ / ________'}"), ln=True)
     pdf.cell(95, 5, s(f"Position:  {ps or '____________________________'}"), ln=False)
     pdf.cell(0, 5, s(f"Company:  {co or '____________________________'}"), ln=True)
     if note:
-        pdf.ln(1); pdf.set_font("Helvetica", "I", 7.5); pdf.set_text_color(110, 120, 130)
-        pdf.multi_cell(pdf.epw, 3.8, s(note)); pdf.set_text_color(0, 0, 0)
+        pdf.ln(1); pdf.set_font(FONT, "I", 7.5); pdf.set_text_color(*GREY)
+        pdf.multi_cell(pdf.epw, 3.8, s(note)); pdf.set_text_color(*INK)
 
 def payment_text(C):
     t = CO["trading"]; cust = Q("q_company") or "the customer"
@@ -6519,7 +6536,7 @@ def existing_costs():
 
 def doc_proposal(pdf, C, sign):
     doc_header(pdf, "Air Conditioning Proposal")
-    pdf.set_font("Helvetica", "", 9)
+    pdf.set_font(FONT, "", 9)
     kv(pdf, "Date:", date.today().strftime("%d/%m/%Y"))
     kv(pdf, "Prepared for:", Q("q_company"))
     kv(pdf, "Address:", ", ".join(cust_address_lines()))
@@ -6540,15 +6557,15 @@ def doc_proposal(pdf, C, sign):
     band(pdf, "Monthly quotation" if not C["is_cash"] else "Quotation")
     ex, ex_total = existing_costs()
     if ex_total > 0:
-        pdf.set_font("Helvetica", "B", 8.5); pdf.cell(0, 5, "Your existing monthly air conditioning costs", ln=True)
-        pdf.set_font("Helvetica", "", 8.5)
+        pdf.set_font(FONT, "B", 8.5); pdf.cell(0, 5, "Your existing monthly air conditioning costs", ln=True)
+        pdf.set_font(FONT, "", 8.5)
         for lbl, v in ex:
             if v:
                 pdf.cell(120, 5, "  " + s(lbl), ln=False); pdf.cell(0, 5, money(v), ln=True, align="R")
-        pdf.set_font("Helvetica", "B", 8.5); pdf.cell(120, 5.5, "  TOTAL existing", border="T", ln=False); pdf.cell(0, 5.5, money(ex_total), border="T", ln=True, align="R")
+        pdf.set_font(FONT, "B", 8.5); pdf.cell(120, 5.5, "  TOTAL existing", border="T", ln=False); pdf.cell(0, 5.5, money(ex_total), border="T", ln=True, align="R")
         pdf.ln(2)
-    pdf.set_font("Helvetica", "B", 8.5); pdf.cell(0, 5, "New air conditioning costs", ln=True)
-    pdf.set_font("Helvetica", "", 8.5)
+    pdf.set_font(FONT, "B", 8.5); pdf.cell(0, 5, "New air conditioning costs", ln=True)
+    pdf.set_font(FONT, "", 8.5)
     if C["is_cash"]:
         pdf.cell(120, 5.2, "  Equipment, installation and set-up (one-off, plus VAT)", ln=False); pdf.cell(0, 5.2, money(C["cash_price"]), ln=True, align="R")
     else:
@@ -6558,7 +6575,7 @@ def doc_proposal(pdf, C, sign):
     pdf.cell(120, 5.2, s(f"  On-site support after year {fy} (annual charge, plus VAT)"), ln=False); pdf.cell(0, 5.2, money(C["support"]), ln=True, align="R")
     if not C["is_cash"] and ex_total > 0:
         diff = ex_total - C["rental"]
-        pdf.set_font("Helvetica", "B", 8.5)
+        pdf.set_font(FONT, "B", 8.5)
         pdf.cell(120, 5.6, "  Estimated monthly difference", border="T", ln=False)
         pdf.cell(0, 5.6, (money(diff) + " saving") if diff >= 0 else (money(-diff) + " more"), border="T", ln=True, align="R")
     pdf.ln(1)
@@ -6580,7 +6597,7 @@ def doc_proposal(pdf, C, sign):
     if cash_back > 0:
         yes.append(("Cashback towards your requirements", money(cash_back)))
     for lbl, v in yes:
-        pdf.set_font("Helvetica", "", 8.5); pdf.cell(120, 5, "  " + s(lbl), ln=False); pdf.cell(0, 5, s(v), ln=True, align="R")
+        pdf.set_font(FONT, "", 8.5); pdf.cell(120, 5, "  " + s(lbl), ln=False); pdf.cell(0, 5, s(v), ln=True, align="R")
     if not C["is_cash"]:
         pdf.ln(1)
         para(pdf, f"Equipment rental terms: monthly rental period of {C['profile']} ({C['term_label']}), plus VAT at the prevailing rate.", style="B")
@@ -6592,7 +6609,7 @@ def doc_proposal(pdf, C, sign):
 
 def doc_order(pdf, C, sign):
     doc_header(pdf, "Order Form")
-    pdf.set_font("Helvetica", "", 8); company_block(pdf)
+    pdf.set_font(FONT, "", 8); company_block(pdf)
     kv(pdf, "Date:", date.today().strftime("%d/%m/%Y"))
     customer_block(pdf)
     equipment_table(pdf, C)
@@ -6639,8 +6656,8 @@ def doc_dd(pdf, C, sign):
              ("Step two", "Set up your account by entering the account holder's name, sort code and account number."),
              ("Step three", "Once complete you will receive an email confirming your registration.")]
     for a, b in steps:
-        pdf.set_fill_color(*PALE); pdf.set_font("Helvetica", "B", 9)
-        pdf.cell(30, 9, "  " + a, fill=True, border="B"); pdf.set_font("Helvetica", "", 9)
+        pdf.set_fill_color(*PALE); pdf.set_font(FONT, "B", 9)
+        pdf.cell(30, 9, "  " + a, fill=True, border="B"); pdf.set_font(FONT, "", 9)
         pdf.cell(0, 9, "  " + s(b), fill=True, border="B", ln=True)
         pdf.ln(1)
     pdf.ln(2)
@@ -6673,13 +6690,13 @@ def doc_terms(pdf, C, sign):
     for title, text in TERMS:
         if pdf.get_y() + 14 > pdf.page_break_trigger:      # don't leave a clause heading on its own at the foot of a page
             pdf.add_page()
-        pdf.set_fill_color(*NAVY); pdf.set_text_color(255, 255, 255); pdf.set_font("Helvetica", "B", 8)
-        pdf.cell(0, 5, "  " + s(title), fill=True, ln=True); pdf.set_text_color(0, 0, 0)
+        pdf.set_fill_color(*NAVY); pdf.set_text_color(255, 255, 255); pdf.set_font(FONT, "B", 8)
+        pdf.cell(0, 5, "  " + s(title), fill=True, ln=True); pdf.set_text_color(*INK)
         try:
             body = text.format(**fill)
         except Exception:
             body = text
-        pdf.set_font("Helvetica", "", 7.4); pdf.set_x(pdf.l_margin)
+        pdf.set_font(FONT, "", 7.4); pdf.set_x(pdf.l_margin)
         pdf.multi_cell(pdf.epw, 3.7, s(body), align="J"); pdf.ln(1.2)
     sig_block(pdf, "Confirmation - I have read and agree to these Terms & Conditions", sign)
 
@@ -6799,6 +6816,8 @@ def build_steadytemp_pack(sign=None):
         _stx.LOGO_BYTES = _asset_bytes("steadytemp_logo.png")
     except Exception:
         _stx.LOGO_BYTES = None
+    _fr, _fm = ASSETS_DIR / "fonts" / "InstrumentSans-Regular.ttf", ASSETS_DIR / "fonts" / "InstrumentSans-Medium.ttf"
+    _stx.FONT_FILES = {"": str(_fr), "B": str(_fm)} if (_fr.exists() and _fm.exists()) else {}    # no font files -> plain Helvetica
     _stx.QD = {
         "q_company": G("q_comp_name") or "", "q_reg": G("q_comp_reg") or "", "q_addr1": addr,
         "q_postcode": ("" if (pc and pc.upper() in addr.upper()) else pc), "q_contact": nm.split(" - ")[0].strip(), "q_signatory": nm,
