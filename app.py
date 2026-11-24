@@ -10942,10 +10942,25 @@ with tab6:
                        "If you change the quote after this, press 📝 again for a fresh copy.")
 
     def _save_quote_ui(key):
-        st.download_button("💾 Save the quote file (.json)", data=json.dumps(quote_snapshot(), indent=2, default=str),
-                           file_name=f"SYComms_{safe}_QUOTE_{date.today()}.json", mime="application/json",
-                           use_container_width=True, key=key)
-        st.caption("Keep it with the deal, so it can be reopened later (Load previous quote) to correct or re-issue the paperwork.")
+        """Save the quote to the cloud (shared saved-deals store), or as a file if cloud saving isn't set up."""
+        _sdc2 = _sd_cfg()
+        if _sdc2:
+            if st.button("☁️ Save the quote to the cloud", use_container_width=True, type="primary", key=key):
+                try:
+                    _v, _p = _sd_save(_sdc2, quote_snapshot())
+                    st.session_state[key + "_msg"] = f"✅ Saved as version {_v} for {st.session_state.get('q_comp_name', '')}."
+                    st.session_state.pop("_sd_items", None)
+                except Exception as _e:
+                    st.session_state[key + "_msg"] = f"❌ Couldn't save: {_e}"
+            if st.session_state.get(key + "_msg"):
+                st.info(st.session_state[key + "_msg"])
+            st.caption("It goes into Saved deals (left panel), so it can be reopened later to correct or re-issue the paperwork. "
+                       "Saving again makes a new version - earlier ones are kept.")
+        else:
+            st.download_button("💾 Save the quote file (.json)", data=json.dumps(quote_snapshot(), indent=2, default=str),
+                               file_name=f"SYComms_{safe}_QUOTE_{date.today()}.json", mime="application/json",
+                               use_container_width=True, key=key)
+            st.caption("Cloud saving isn't switched on, so this saves a file. Keep it with the deal, so it can be reopened later.")
 
     sig_bytes, sig_name = None, contact_name or ""
 
@@ -11124,6 +11139,7 @@ with tab6:
             st.caption("Upload it in Zoho Sign and send it - the customer signs the last box on your device. When they do, Zoho opens "
                        "the account, files the paperwork under Legal Contracts and raises the onboarding tickets.")
             st.link_button("Open Zoho Sign →", "https://sign.zoho.eu", use_container_width=True)
+            st.markdown("#### Step 4 - Save the quote")
             _save_quote_ui("dl_quote_ip")
     else:
         # ═══ REMOTE: everything signed in Zoho Sign - every signature box, initials box and date is tagged ═══
@@ -11162,10 +11178,9 @@ with tab6:
                 st.button("📝 Record in Zoho & download the full pack", disabled=True, use_container_width=True, key="zs_rm_dis")
                 st.caption("Unlocks once the customer has signed the Contract Information Sheet (tick the box above).")
 
-            st.markdown("#### Step 3 - Send it in Zoho Sign")
-            st.caption("Upload the file in Zoho Sign with the customer as the signer and send it. When they sign, Zoho opens the "
-                       "account, files the paperwork under Legal Contracts and raises the onboarding tickets.")
-            st.link_button("Open Zoho Sign →", "https://sign.zoho.eu", use_container_width=True)
+            st.markdown("#### Step 3 - Save the quote")
+            st.caption("Once the paperwork is signed in Zoho Sign, Zoho opens the account, files it under Legal Contracts and raises "
+                       "the onboarding tickets by itself.")
             _save_quote_ui("dl_quote_rm")
 
     # ── Anything else that's signed separately ──────────────────────────────────
