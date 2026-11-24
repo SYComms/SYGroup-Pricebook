@@ -1529,10 +1529,18 @@ def _zoho_setup_ui(kp="_zt"):
     _zdc_opts = ["eu", "com", "in", "com.au", "jp"]
     _zdc = st.selectbox("Zoho data centre", _zdc_opts, index=_zdc_opts.index(_zoho_dc()) if _zoho_dc() in _zdc_opts else 0,
                         key=f"{kp}_dc", help="You use the EU one (accounts.zoho.eu).")
+    _zscope = st.radio("What should the app be allowed to do?",
+                       ["Look-ups + deals + Zoho Sign (recommended)", "Look-ups only (read-only)"], key=f"{kp}_scope",
+                       help="The first lets consultants send paperwork through Zoho Sign from the Sign & Send tab: the app records "
+                            "the deal in Zoho and sends the envelope. Read-only can only pull customers in.")
+    _zscope_txt = ZOHO_FULL_SCOPE if _zscope.startswith("Look-ups +") else ZOHO_READ_SCOPE
     st.markdown("**1. In the Zoho API Console (api-console.zoho." + _zdc + ") - Self Client - Generate Code, use this scope:**")
-    st.code("ZohoCRM.modules.READ,ZohoCRM.settings.READ", language=None)
-    st.caption("Read-only: the app can look up accounts, contacts and contracts but can never change anything in Zoho. "
-               "Set the time duration to 10 minutes - the code only works once and expires quickly.")
+    st.code(_zscope_txt, language=None)
+    st.caption(("Lets the app look up customers, create and update deals (and their notes), and send documents through "
+                "Zoho Sign. It can't delete anything. " if _zscope_txt == ZOHO_FULL_SCOPE else
+                "Read-only: the app can look up accounts, contacts and contracts but can never change anything in Zoho. ")
+               + "Set the time duration to 10 minutes - the code only works once and expires quickly. "
+                 "Sign in to the API Console as a Zoho Sign user (Zoho Sign sends from that person's account).")
     _zcid = st.text_input("Client ID", value=_secret("ZOHO_CLIENT_ID"), key=f"{kp}_cid")
     _zcs  = st.text_input("Client Secret", value="", type="password", key=f"{kp}_cs",
                           placeholder=("(Secrets holds one - " + str(len(_secret("ZOHO_CLIENT_SECRET"))) + " characters; a real secret is about 42 - paste the full one here)") if _secret("ZOHO_CLIENT_SECRET") else "paste the client secret")
@@ -1602,6 +1610,802 @@ def _zoho_setup_ui(kp="_zt"):
                 st.success("Connected to Zoho - sign-in works.")
             except Exception as _zte:
                 st.error(str(_zte))
+
+# ─── ZOHO CRM (write) + ZOHO SIGN: record the deal and send paperwork for signature ─────────────
+# Needs a refresh token made with the FULL scope (Admin -> Zoho -> "Look-ups + deals + Zoho Sign").
+# Optional Secrets: ZOHO_STAGE_SENT = Deal stage while the paperwork is out (default "Negotiation/Review").
+# The signed envelope is picked up by Zoho Flow -> the CRM function made in Admin -> Zoho -> "Signed paperwork automation".
+ZOHO_FULL_SCOPE = "ZohoCRM.modules.ALL,ZohoCRM.settings.READ,ZohoSign.documents.ALL"
+ZOHO_READ_SCOPE = "ZohoCRM.modules.READ,ZohoCRM.settings.READ"
+
+def _zoho_send(method, path, body=None):
+    """CRM write (POST/PUT) -> parsed reply. Raises with a plain-English message on failure."""
+    r = _req.request(method, f"https://www.zohoapis.{_zoho_dc()}/crm/v6/{path}", timeout=25, json=body or {},
+                     headers={"Authorization": f"Zoho-oauthtoken {_zoho_token()}"})
+    try:
+        j = r.json()
+    except Exception:
+        raise RuntimeError(f"Zoho gave an unexpected reply (status {r.status_code}): {r.text[:150]!r}")
+    if isinstance(j, dict) and j.get("code") in ("OAUTH_SCOPE_MISMATCH", "NO_PERMISSION"):
+        raise RuntimeError("The Zoho connection is read-only. An admin needs to make a new refresh token in Admin -> Zoho "
+                           "using the 'Look-ups + deals + Zoho Sign' scope.")
+    row = ((j.get("data") or [{}])[0]) if isinstance(j, dict) else {}
+    if isinstance(row, dict) and row.get("status") == "error":
+        det = row.get("details") or {}
+        raise RuntimeError(f"Zoho refused it: {row.get('message')} ({row.get('code')}"
+                           + (f", field {det.get('api_name')}" if det.get("api_name") else "") + ")")
+    if isinstance(j, dict) and j.get("status") == "error":
+        raise RuntimeError(f"Zoho refused it: {j.get('message')} ({j.get('code')})")
+    return j
+
+def zs_text_tag(pdf, width_mm, size=20):
+    """Zoho Sign text tag for a signature box, widened with spaces to about width_mm at the current font.
+    Drawn in white on the white signature panel so it never shows - Zoho Sign turns it into the signature field,
+    whether the PDF is sent from the pricebook or uploaded to Zoho Sign by hand."""
+    pdf.set_font("Helvetica", "", size)
+    tag = "{{S}}"
+    while pdf.get_string_width(tag[:-2] + " " + "}}") <= width_mm and len(tag) < 120:
+        tag = tag[:-2] + " }}"
+    return tag
+
+def _sign_base():
+    return f"https://sign.zoho.{_zoho_dc()}/api/v1"
+
+def _sign_call(method, path, data=None, files=None, raw=False):
+    r = _req.request(method, f"{_sign_base()}/{path}", timeout=60, data=data, files=files,
+                     headers={"Authorization": f"Zoho-oauthtoken {_zoho_token()}"})
+    if raw:
+        return r
+    try:
+        j = r.json()
+    except Exception:
+        raise RuntimeError(f"Zoho Sign gave an unexpected reply (status {r.status_code}): {r.text[:150]!r}")
+    if j.get("status") != "success":
+        msg = str(j.get("message") or j.get("code") or r.status_code)
+        if "scope" in msg.lower() or "oauth" in msg.lower() or r.status_code == 401:
+            msg += (" - the Zoho connection doesn't include Zoho Sign yet. An admin needs a new refresh token "
+                    "(Admin -> Zoho, 'Look-ups + deals + Zoho Sign' scope).")
+        raise RuntimeError(f"Zoho Sign: {msg}")
+    return j
+
+def zs_marker(deal_id, kind, primary):
+    """The reference the CRM function reads to find the deal. Kept in the envelope's description."""
+    return f"Pricebook ref SYC;deal={deal_id};kind={kind};primary={1 if primary else 0};end"
+
+def sign_send_pdf(pdf_bytes, file_name, request_name, signer_name, signer_email, marker, note=""):
+    """Upload a PDF (its {{S}} text tags become the signature boxes) and send it to one signer. Returns the request id."""
+    req = {"requests": {"request_name": request_name[:100], "description": marker, "expiration_days": 30,
+                        "is_sequential": True, "email_reminders": True, "reminder_period": 3,
+                        "notes": note[:500] if note else "",
+                        "actions": [{"action_type": "SIGN", "recipient_name": signer_name, "recipient_email": signer_email,
+                                     "verify_recipient": False, "signing_order": 0}]}}
+    j = _sign_call("POST", "requests", data={"data": json.dumps(req)},
+                   files={"file": (file_name, pdf_bytes, "application/pdf")})
+    rq = j.get("requests") or {}
+    rid = str(rq.get("request_id") or "")
+    acts = rq.get("actions") or []
+    if not rid or not acts:
+        raise RuntimeError("Zoho Sign created the document but didn't return its details - check Zoho Sign's Drafts.")
+    sub = {"requests": {"actions": [{"action_id": str(a.get("action_id")), "action_type": "SIGN",
+                                     "recipient_name": signer_name, "recipient_email": signer_email,
+                                     "verify_recipient": False, "signing_order": 0} for a in acts[:1]]}}
+    try:
+        _sign_call("POST", f"requests/{rid}/submit", data={"data": json.dumps(sub)})
+    except RuntimeError as e:
+        if "field" in str(e).lower():
+            raise RuntimeError("Zoho Sign couldn't find the signature box in this document (it is left in Zoho Sign's Drafts). "
+                               "Open it in Zoho Sign, drop a signature field on the 'Agreement to proceed' box and send it from there.")
+        raise
+    return rid
+
+def sign_status(request_id):
+    """'completed', 'inprogress', 'declined', 'expired', 'recalled' ... (lower case)."""
+    j = _sign_call("GET", f"requests/{request_id}")
+    return str((j.get("requests") or {}).get("request_status") or "").lower()
+
+def _split_contact(text):
+    nm, _, pos = str(text or "").partition(" - ")
+    parts = nm.strip().split()
+    first = " ".join(parts[:-1]) if len(parts) > 1 else ""
+    last = parts[-1] if parts else ""
+    return first, last, pos.strip()
+
+def zoho_order_data():
+    """Everything the CRM function needs to open the account, the Legal Contract and the onboarding tickets.
+    Read from the live quote (called from the Sign & Send tab, after every figure has been worked out)."""
+    G = lambda k: st.session_state.get(k)
+    g = globals()
+    first, last, pos = _split_contact(G("q_contact"))
+    hw = []
+    for qd in ("desktop_quantities", "cordless_quantities", "headset_quantities", "other_quantities", "router_quantities"):
+        for n, q in (g.get(qd) or {}).items():
+            try:
+                if int(q or 0) > 0: hw.append(f"{int(q)} x {n}")
+            except Exception:
+                pass
+    _svc = g.get("svc") or {}
+    bb = []
+    if float(_svc.get("bb_sell", 0) or 0) > 0:
+        bb.append(f"{g.get('bb_provider', '')} {g.get('bb_package', '')}".strip())
+        try:
+            for _xp, _xq, _xs in extra_bb_display():
+                bb.append(f"{_xq} x {g.get('bb_provider', '')} {_xp} (additional)")
+        except Exception:
+            pass
+    try:
+        loa = _loa_data()
+    except Exception:
+        loa = {"on": False, "numbers": []}
+    ports = [str(n) for n in (loa.get("numbers") or [])] if loa.get("on") else []
+    try:
+        rows = build_comparison_rows()
+        lines = [f"{l}: GBP {nv:,.2f}/mo" for l, cv, nv in rows if nv > 0.004]
+    except Exception:
+        lines = []
+    try:
+        term = int(g.get("lease_term") or 0)
+    except Exception:
+        term = 0
+    pm = "Lease" if g.get("is_lease") else ("System rental" if g.get("is_inhouse") else "Upfront purchase")
+    _cu = st.session_state.get("current_user") or {}
+    return {
+        "company": str(G("q_comp_name") or "").strip(), "reg": str(G("q_comp_reg") or "").strip(),
+        "address": str(G("q_address") or "").strip(), "phone": str(G("q_phone") or "").strip(),
+        "first_name": first, "last_name": last or str(G("q_comp_name") or "Customer"), "position": pos,
+        "email": str(G("q_dir_email") or "").strip(), "billing_email": str(G("q_bill_email") or "").strip(),
+        "brand": str(st.session_state.get("selected_brand") or "SY Comms"),
+        "monthly": round(float(g.get("total_mo") or 0), 2), "upfront": round(float(g.get("upfront") or 0), 2),
+        "term_months": term, "payment": pm, "users": int(g.get("total_voice_channels") or 0),
+        "hardware": hw, "broadband": bb, "ports": ports, "port_provider": str(loa.get("provider") or ""),
+        "monthly_lines": lines, "call_scope": bool(g.get("cs_active")), "air_con": bool(g.get("ac_active")),
+        "consultant": _prepared_by(), "consultant_email": str(_cu.get("email") or ""),
+        "lead_id": str(G("q_zl_id") or "") if G("q_zl_type") == "Lead" else "",
+    }
+
+def _zoho_deal_description(d):
+    """Readable order summary for the deal, with the machine-readable copy on the last line."""
+    out = [f"Pricebook order - {d['company']} ({d['brand']})",
+           f"Signatory: {d['first_name']} {d['last_name']}".strip() + (f", {d['position']}" if d['position'] else "")
+           + (f" <{d['email']}>" if d['email'] else ""),
+           f"Monthly: GBP {d['monthly']:,.2f} + VAT over {d['term_months']} months ({d['payment']})"
+           + (f" | Upfront: GBP {d['upfront']:,.2f} + VAT" if d['upfront'] else "")]
+    if d["monthly_lines"]: out += ["", "Monthly charges:"] + [f"- {x}" for x in d["monthly_lines"]]
+    if d["hardware"]: out += ["", "Hardware:"] + [f"- {x}" for x in d["hardware"]]
+    if d["broadband"]: out += ["", "Broadband:"] + [f"- {x}" for x in d["broadband"]]
+    if d["ports"]: out += ["", "Numbers to port" + (f" (from {d['port_provider']})" if d["port_provider"] else "") + ":"] + [f"- {x}" for x in d["ports"]]
+    if d["consultant"]: out += ["", f"Consultant: {d['consultant']}"]
+    out += ["", "---- Pricebook data for the signed-paperwork automation: please don't edit the line below ----",
+            "SYCDATA:" + json.dumps(d, ensure_ascii=True, separators=(",", ":"))]
+    return "\n".join(out)
+
+def zoho_ensure_deal(d):
+    """Make sure a Deal exists for this quote and holds the latest order. Returns the deal id.
+    Linked deal -> updated. Linked account -> new deal on that account. Lead or nothing -> new deal with no account
+    (the CRM function converts the lead / opens the account once the paperwork is signed)."""
+    G = st.session_state.get
+    desc = _zoho_deal_description(d)
+    deal_id = str(G("q_zl_deal") or "")
+    if not deal_id and G("q_zl_type") == "Deal":
+        deal_id = str(G("q_zl_id") or "")
+    if deal_id:
+        _zoho_send("PUT", f"Deals/{deal_id}", {"data": [{"Description": desc, "Amount": d["monthly"]}]})
+        st.session_state["q_zl_deal"] = deal_id
+        return deal_id
+    import datetime as _dt
+    rec = {"Deal_Name": f"{d['company'] or 'New customer'} - {d['brand']} {_dt.date.today().strftime('%d/%m/%Y')}"[:120],
+           "Stage": _secret("ZOHO_STAGE_SENT") or "Negotiation/Review",
+           "Closing_Date": (_dt.date.today() + _dt.timedelta(days=14)).isoformat(),
+           "Amount": d["monthly"], "Description": desc}
+    if G("q_zl_type") == "Account" and G("q_zl_id"):
+        rec["Account_Name"] = {"id": str(G("q_zl_id"))}
+    elif G("q_zl_type") == "Deal" and G("q_zl_acct"):
+        rec["Account_Name"] = {"id": str(G("q_zl_acct"))}
+    try:
+        j = _zoho_send("POST", "Deals", {"data": [rec]})
+    except RuntimeError as e:
+        if "Stage" in str(e):
+            raise RuntimeError(str(e) + " - the deal stage name doesn't match your Zoho. An admin can set the right one "
+                               "as ZOHO_STAGE_SENT in Secrets (Admin -> Zoho -> Signed paperwork automation lists your stages).")
+        raise
+    deal_id = str((((j.get("data") or [{}])[0]).get("details") or {}).get("id") or "")
+    if not deal_id:
+        raise RuntimeError("Zoho didn't return the new deal's id.")
+    st.session_state["q_zl_deal"] = deal_id
+    return deal_id
+
+def zoho_deal_note(deal_id, title, text):
+    try:
+        _zoho_send("POST", f"Deals/{deal_id}/Notes", {"data": [{"Note_Title": title[:120], "Note_Content": text[:3000]}]})
+    except Exception:
+        pass   # a missing note never stops the paperwork going out
+
+def zoho_send_for_signature(pdf_bytes, file_name, kind, primary, label):
+    """Deal first, then the envelope; returns (deal_id, request_id)."""
+    G = st.session_state.get
+    d = zoho_order_data()
+    signer_name = str(G("zs_signer_name") or "").strip()
+    signer_email = str(G("zs_signer_email") or "").strip()
+    if not (signer_name and "@" in signer_email):
+        raise RuntimeError("Add the signer's name and email in the 'Send through Zoho' box first.")
+    deal_id = zoho_ensure_deal(d)
+    rid = sign_send_pdf(pdf_bytes, file_name, f"{d['company'] or 'Customer'} - {label}", signer_name, signer_email,
+                        zs_marker(deal_id, kind, primary),
+                        note=f"Your {label} from {d['brand']}. Please review and sign where indicated.")
+    zoho_deal_note(deal_id, f"Sent for signature: {label}",
+                   f"Sent via Zoho Sign to {signer_name} <{signer_email}> by {d['consultant'] or 'the pricebook'} (request {rid}).")
+    return deal_id, rid
+
+# ─── SIGNED PAPERWORK AUTOMATION: the Zoho CRM function (Deluge) the Admin panel fills in ─────────────
+ZOHO_SIGNED_FN = r'''string standalone.__FN__(String request_id)
+{
+	// Signed paperwork automation - made by the SYGroup Pricebook (Admin -> Zoho).
+	// Zoho Flow runs this when a Zoho Sign envelope sent from the pricebook is completed.
+	// It opens/converts the account, files the signed PDF under Legal Contracts, marks the deal won
+	// and raises the onboarding tickets in Zoho Desk.
+	// ---------------- settings (filled in by the pricebook) ----------------
+	SIGN_BASE = "https://sign.zoho.__DC__/api/v1";
+	DESK_BASE = "https://desk.zoho.__DC__/api/v1";
+	CONTRACT_MODULE = "__CONTRACT_MODULE__";
+	F_ACCOUNT = "__F_ACCOUNT__";
+	F_NAME = "__F_NAME__";
+	F_TYPE = "__F_TYPE__";
+	TYPE_VALUE = "__TYPE_VALUE__";
+	F_AMOUNT = "__F_AMOUNT__";
+	F_PERIOD = "__F_PERIOD__";
+	PERIOD_VALUE = "__PERIOD_VALUE__";
+	F_START = "__F_START__";
+	F_END = "__F_END__";
+	WON_STAGE = "__WON_STAGE__";
+	ACCOUNT_TYPE = "__ACCOUNT_TYPE__";
+	DEPT_PROVISIONING = "__DEPT_PROV__";
+	DEPT_BILLING = "__DEPT_BILL__";
+	// ------------------------------------------------------------------------
+	report = list();
+	request_id = request_id.trim();
+	// 1. The completed envelope and the pricebook reference inside it
+	sresp = invokeurl
+	[
+		url :SIGN_BASE + "/requests/" + request_id
+		type :GET
+		connection:"zohosign"
+	];
+	req = sresp.get("requests");
+	if(req == null)
+	{
+		return "Zoho Sign request " + request_id + " not found: " + sresp.toString();
+	}
+	env_desc = ifnull(req.get("description"),"");
+	if(!env_desc.contains("SYC;"))
+	{
+		return "Not sent from the pricebook - nothing to do.";
+	}
+	marker = env_desc.subString(env_desc.indexOf("SYC;"));
+	deal_id = "";
+	kind = "pack";
+	is_primary = false;
+	for each part in marker.toList(";")
+	{
+		if(part.startsWith("deal="))
+		{
+			deal_id = part.getSuffix("deal=");
+		}
+		else if(part.startsWith("kind="))
+		{
+			kind = part.getSuffix("kind=");
+		}
+		else if(part == "primary=1")
+		{
+			is_primary = true;
+		}
+	}
+	if(deal_id == "")
+	{
+		return "No deal reference in the envelope.";
+	}
+	// 2. The deal and the order data the pricebook saved on it
+	deal = zoho.crm.getRecordById("Deals",deal_id.toLong());
+	if(deal.get("id") == null)
+	{
+		return "Deal " + deal_id + " not found in Zoho CRM.";
+	}
+	ddesc = ifnull(deal.get("Description"),"");
+	if(ddesc.contains("PROCESSED:" + request_id))
+	{
+		return "Already done for this envelope.";
+	}
+	data = Map();
+	if(ddesc.contains("SYCDATA:"))
+	{
+		raw = ddesc.subString(ddesc.indexOf("SYCDATA:") + 8);
+		if(raw.contains("\n"))
+		{
+			raw = raw.subString(0,raw.indexOf("\n"));
+		}
+		data = raw.trim().toMap();
+	}
+	company = ifnull(data.get("company"),"");
+	if(company == "")
+	{
+		company = ifnull(deal.get("Deal_Name"),"Customer");
+	}
+	brand = ifnull(data.get("brand"),"SY Comms");
+	today = zoho.currentdate;
+	today_txt = today.toString("dd/MM/yyyy");
+	safe_co = company.replaceAll("[^A-Za-z0-9 &.-]","");
+	// 3. The signed PDF and Zoho Sign's completion certificate
+	label = if(kind == "cis","Contract Information Sheet","Agreement pack");
+	pdf = invokeurl
+	[
+		url :SIGN_BASE + "/requests/" + request_id + "/pdf"
+		type :GET
+		connection:"zohosign"
+	];
+	pdf.setFileName(safe_co + " - " + label + " - signed " + today.toString("dd-MM-yyyy") + ".pdf");
+	cert = invokeurl
+	[
+		url :SIGN_BASE + "/requests/" + request_id + "/completioncertificate"
+		type :GET
+		connection:"zohosign"
+	];
+	cert.setFileName(safe_co + " - " + label + " - signing certificate.pdf");
+	// The Contract Information Sheet (step 1 of 2) is only filed on the deal
+	if(kind != "pack")
+	{
+		zoho.crm.attachFile("Deals",deal_id.toLong(),pdf);
+		zoho.crm.attachFile("Deals",deal_id.toLong(),cert);
+		nmap = Map();
+		nmap.put("Parent_Id",deal_id.toLong());
+		nmap.put("se_module","Deals");
+		nmap.put("Note_Title","Signed: " + label);
+		nmap.put("Note_Content",label + " signed in Zoho Sign on " + today_txt + " (request " + request_id + "). The signed PDF is attached to this deal.");
+		zoho.crm.createRecord("Notes",nmap);
+		zoho.crm.updateRecord("Deals",deal_id.toLong(),{"Description":ddesc + "\nPROCESSED:" + request_id});
+		return label + " filed on the deal.";
+	}
+	// 4. The account: the deal's own, else convert the lead, else find by name, else create
+	acc_id = null;
+	contact_id = null;
+	acc_lookup = deal.get("Account_Name");
+	if(acc_lookup != null)
+	{
+		acc_id = acc_lookup.get("id");
+	}
+	lead_id = ifnull(data.get("lead_id"),"").toString();
+	if(acc_id == null && lead_id != "")
+	{
+		try
+		{
+			conv = zoho.crm.convertLead(lead_id.toLong(),{"overwrite":true,"notify_lead_owner":false,"notify_new_entity_owner":false});
+			acc_id = conv.get("Accounts");
+			contact_id = conv.get("Contacts");
+			if(acc_id != null)
+			{
+				report.add("Lead converted to an account");
+			}
+		}
+		catch (e)
+		{
+			report.add("Lead couldn't be converted (" + e + ")");
+		}
+	}
+	if(acc_id == null && !company.contains("(") && !company.contains(")") && !company.contains(","))
+	{
+		try
+		{
+			found = zoho.crm.searchRecords("Accounts","(Account_Name:equals:" + company + ")");
+			if(found.size() > 0 && found.get(0).get("id") != null)
+			{
+				acc_id = found.get(0).get("id");
+				report.add("Matched the existing account");
+			}
+		}
+		catch (e)
+		{
+			info e;
+		}
+	}
+	if(acc_id == null)
+	{
+		amap = Map();
+		amap.put("Account_Name",company);
+		amap.put("Phone",ifnull(data.get("phone"),""));
+		amap.put("Billing_Street",ifnull(data.get("address"),""));
+		newacc = zoho.crm.createRecord("Accounts",amap);
+		acc_id = newacc.get("id");
+		if(acc_id == null)
+		{
+			return "Couldn't create the account: " + newacc.toString();
+		}
+		report.add("Account created");
+	}
+	// 5. The contact (the signatory)
+	email = ifnull(data.get("email"),"");
+	if(contact_id == null && email != "")
+	{
+		try
+		{
+			cfound = zoho.crm.searchRecords("Contacts","(Email:equals:" + email + ")");
+			if(cfound.size() > 0 && cfound.get(0).get("id") != null)
+			{
+				contact_id = cfound.get(0).get("id");
+			}
+		}
+		catch (e)
+		{
+			info e;
+		}
+	}
+	if(contact_id == null)
+	{
+		cmap = Map();
+		cmap.put("First_Name",ifnull(data.get("first_name"),""));
+		cmap.put("Last_Name",ifnull(data.get("last_name"),company));
+		cmap.put("Email",email);
+		cmap.put("Phone",ifnull(data.get("phone"),""));
+		cmap.put("Title",ifnull(data.get("position"),""));
+		cmap.put("Account_Name",acc_id);
+		newc = zoho.crm.createRecord("Contacts",cmap);
+		contact_id = newc.get("id");
+		if(contact_id != null)
+		{
+			report.add("Contact created");
+		}
+	}
+	// 6. Deal won, account marked as a customer
+	dmap = Map();
+	dmap.put("Stage",WON_STAGE);
+	dmap.put("Account_Name",acc_id);
+	if(contact_id != null)
+	{
+		dmap.put("Contact_Name",contact_id);
+	}
+	dmap.put("Closing_Date",today.toString("yyyy-MM-dd"));
+	zoho.crm.updateRecord("Deals",deal_id.toLong(),dmap);
+	if(ACCOUNT_TYPE != "")
+	{
+		zoho.crm.updateRecord("Accounts",acc_id.toLong(),{"Account_Type":ACCOUNT_TYPE});
+	}
+	// 7. The Legal Contract, with the signed documents attached
+	term = 0;
+	if(data.get("term_months") != null)
+	{
+		term = data.get("term_months").toLong();
+	}
+	monthly = 0.0;
+	if(data.get("monthly") != null)
+	{
+		monthly = data.get("monthly").toDecimal();
+	}
+	lmap = Map();
+	lmap.put(F_NAME,company + " - " + brand + " agreement signed " + today_txt);
+	if(F_ACCOUNT != "")
+	{
+		lmap.put(F_ACCOUNT,acc_id);
+	}
+	if(F_TYPE != "" && TYPE_VALUE != "")
+	{
+		lmap.put(F_TYPE,TYPE_VALUE);
+	}
+	if(F_AMOUNT != "")
+	{
+		lmap.put(F_AMOUNT,monthly);
+	}
+	if(F_PERIOD != "" && PERIOD_VALUE != "")
+	{
+		lmap.put(F_PERIOD,PERIOD_VALUE);
+	}
+	if(F_START != "")
+	{
+		lmap.put(F_START,today.toString("yyyy-MM-dd"));
+	}
+	if(F_END != "" && term > 0)
+	{
+		lmap.put(F_END,today.addMonth(term).toString("yyyy-MM-dd"));
+	}
+	con = zoho.crm.createRecord(CONTRACT_MODULE,lmap);
+	con_id = con.get("id");
+	if(con_id != null)
+	{
+		zoho.crm.attachFile(CONTRACT_MODULE,con_id.toLong(),pdf);
+		zoho.crm.attachFile(CONTRACT_MODULE,con_id.toLong(),cert);
+		report.add("Legal Contract created with the signed documents");
+	}
+	else
+	{
+		report.add("Legal Contract NOT created: " + con.toString());
+	}
+	zoho.crm.attachFile("Deals",deal_id.toLong(),pdf);
+	// 8. Onboarding tickets in Zoho Desk (main agreement only)
+	if(is_primary)
+	{
+		hardware = ifnull(data.get("hardware"),list());
+		broadband = ifnull(data.get("broadband"),list());
+		ports = ifnull(data.get("ports"),list());
+		mlines = ifnull(data.get("monthly_lines"),list());
+		who = (ifnull(data.get("first_name"),"") + " " + ifnull(data.get("last_name"),"")).trim();
+		head = "<b>" + company + "</b> signed their " + brand + " paperwork on " + today_txt + ".<br>";
+		head = head + "Contact: " + who + " " + ifnull(data.get("position"),"") + " | " + email + " | " + ifnull(data.get("phone"),"") + "<br>";
+		head = head + "Site address: " + ifnull(data.get("address"),"").replaceAll("\n",", ") + "<br>";
+		head = head + "Consultant: " + ifnull(data.get("consultant"),"") + "<br>";
+		try
+		{
+			orgs = invokeurl
+			[
+				url :DESK_BASE + "/organizations"
+				type :GET
+				connection:"zohodesk"
+			];
+			org_id = orgs.get("data").get(0).get("id").toString();
+			hdr = Map();
+			hdr.put("orgId",org_id);
+			hdr.put("Content-Type","application/json");
+			depts = invokeurl
+			[
+				url :DESK_BASE + "/departments?limit=100"
+				type :GET
+				headers:hdr
+				connection:"zohodesk"
+			];
+			prov_id = "";
+			bill_id = "";
+			for each dep in depts.get("data")
+			{
+				dname = ifnull(dep.get("name"),"").trim().toLowerCase();
+				if(dname == DEPT_PROVISIONING.trim().toLowerCase())
+				{
+					prov_id = dep.get("id").toString();
+				}
+				if(dname == DEPT_BILLING.trim().toLowerCase())
+				{
+					bill_id = dep.get("id").toString();
+				}
+			}
+			tcontact = Map();
+			tcontact.put("lastName",ifnull(data.get("last_name"),company));
+			tcontact.put("firstName",ifnull(data.get("first_name"),""));
+			if(email != "")
+			{
+				tcontact.put("email",email);
+			}
+			// Broadband & provisioning: kit, broadband, number port
+			if(hardware.size() > 0 || broadband.size() > 0 || ports.size() > 0)
+			{
+				body = head + "<br>";
+				if(hardware.size() > 0)
+				{
+					body = body + "<b>Kit to order</b><br>";
+					for each h in hardware
+					{
+						body = body + "- " + h + "<br>";
+					}
+				}
+				else
+				{
+					body = body + "<b>No hardware</b> (softphone / licences only)<br>";
+				}
+				if(broadband.size() > 0)
+				{
+					body = body + "<br><b>Broadband to order</b><br>";
+					for each b in broadband
+					{
+						body = body + "- " + b + "<br>";
+					}
+				}
+				if(ports.size() > 0)
+				{
+					body = body + "<br><b>Numbers to port</b>";
+					if(ifnull(data.get("port_provider"),"") != "")
+					{
+						body = body + " (currently with " + data.get("port_provider") + ")";
+					}
+					body = body + "<br>";
+					for each n in ports
+					{
+						body = body + "- " + n + "<br>";
+					}
+				}
+				users_txt = "";
+				if(data.get("users") != null)
+				{
+					users_txt = data.get("users").toString();
+				}
+				body = body + "<br>Users: " + users_txt + "<br>Signed paperwork (incl. Direct Debit) is on the account under Legal Contracts.";
+				if(prov_id != "")
+				{
+					t1 = Map();
+					t1.put("subject","NEW " + brand.toUpperCase() + " CUSTOMER! - " + company);
+					t1.put("departmentId",prov_id);
+					t1.put("description",body);
+					t1.put("priority","Medium");
+					t1.put("contact",tcontact);
+					r1 = invokeurl
+					[
+						url :DESK_BASE + "/tickets"
+						type :POST
+						parameters:t1.toString()
+						headers:hdr
+						connection:"zohodesk"
+					];
+					report.add("Provisioning ticket: " + ifnull(r1.get("ticketNumber"),r1.toString()));
+				}
+				else
+				{
+					report.add("Desk department '" + DEPT_PROVISIONING + "' not found");
+				}
+			}
+			// Billing: add to the next bill run
+			body2 = head + "<br><b>Please add to the next bill run</b><br>";
+			body2 = body2 + "Contract start: " + today_txt + " | Term: " + term + " months | " + ifnull(data.get("payment"),"") + "<br>";
+			body2 = body2 + "Monthly total: GBP " + monthly + " + VAT";
+			if(data.get("upfront") != null && data.get("upfront").toDecimal() > 0)
+			{
+				body2 = body2 + " | Upfront: GBP " + data.get("upfront") + " + VAT";
+			}
+			body2 = body2 + "<br>Billing email: " + ifnull(data.get("billing_email"),"") + "<br><br>";
+			for each m in mlines
+			{
+				body2 = body2 + "- " + m + "<br>";
+			}
+			if(bill_id != "")
+			{
+				t2 = Map();
+				t2.put("subject","Add to next bill run - " + company);
+				t2.put("departmentId",bill_id);
+				t2.put("description",body2);
+				t2.put("priority","Medium");
+				t2.put("contact",tcontact);
+				r2 = invokeurl
+				[
+					url :DESK_BASE + "/tickets"
+					type :POST
+					parameters:t2.toString()
+					headers:hdr
+					connection:"zohodesk"
+				];
+				report.add("Billing ticket: " + ifnull(r2.get("ticketNumber"),r2.toString()));
+			}
+			else
+			{
+				report.add("Desk department '" + DEPT_BILLING + "' not found");
+			}
+		}
+		catch (e)
+		{
+			report.add("Desk tickets failed: " + e);
+		}
+	}
+	// 9. A note on the deal saying what happened, and mark this envelope as done
+	nmap = Map();
+	nmap.put("Parent_Id",deal_id.toLong());
+	nmap.put("se_module","Deals");
+	nmap.put("Note_Title","Signed paperwork processed");
+	nmap.put("Note_Content","Signed in Zoho Sign on " + today_txt + " (request " + request_id + ").\n" + report.toString("\n"));
+	zoho.crm.createRecord("Notes",nmap);
+	zoho.crm.updateRecord("Deals",deal_id.toLong(),{"Description":ddesc + "\nPROCESSED:" + request_id});
+	return report.toString(" | ");
+}
+'''
+
+ZOHO_FLOW_FN = r'''void syc_signed_paperwork_to_crm(string request_id)
+{
+	// Zoho Flow: hands the completed Zoho Sign envelope to the CRM function.
+	resp = invokeurl
+	[
+		url :"__CRM_URL__&request_id=" + request_id
+		type :POST
+	];
+	info resp;
+}
+'''
+
+ZOHO_AUTO_DEFAULTS = {
+    "FN": "syc_signed_paperwork", "CONTRACT_MODULE": "CustomModule4", "F_ACCOUNT": "", "F_NAME": "Name",
+    "F_TYPE": "Type", "TYPE_VALUE": "Network Services Agreement", "F_AMOUNT": "Amount", "F_PERIOD": "Billing_Period",
+    "PERIOD_VALUE": "Monthly", "F_START": "", "F_END": "End_Date", "WON_STAGE": "Closed Won", "ACCOUNT_TYPE": "Customer",
+    "DEPT_PROV": "SYC - Broadband and Provisioning", "DEPT_BILL": "SYC - Billing",
+}
+
+def zoho_build_signed_fn(cfg, dc="eu"):
+    code = ZOHO_SIGNED_FN.replace("__DC__", dc)
+    for k, v in cfg.items():
+        code = code.replace(f"__{k}__", str(v or "").replace('"', "'").strip())
+    return code
+
+def _zoho_read_automation_setup():
+    """Read the Legal Contracts / Deals / Accounts field set-up so the CRM function uses the right names."""
+    out = {"notes": []}
+    def _fields(mod):
+        j = _zoho_get("settings/fields", {"module": mod})
+        if not j.get("fields"):
+            out["notes"].append(f"{mod}: {j.get('message') or j.get('code') or 'no fields returned'}")
+        return j.get("fields") or []
+    def _pl(f):
+        return [str(v.get("actual_value") or v.get("display_value") or "") for v in (f.get("pick_list_values") or [])
+                if str(v.get("actual_value") or v.get("display_value") or "") not in ("", "-None-")]
+    cf = _fields(ZOHO_AUTO_DEFAULTS["CONTRACT_MODULE"])
+    out["contract_fields"] = [(f.get("field_label"), f.get("api_name"), f.get("data_type")) for f in cf]
+    guess = {}
+    for f in cf:
+        lab, api, dt = str(f.get("field_label") or "").lower(), f.get("api_name"), f.get("data_type")
+        if dt == "lookup" and ((f.get("lookup") or {}).get("module") or {}).get("api_name") == "Accounts" and "F_ACCOUNT" not in guess:
+            guess["F_ACCOUNT"] = api
+        elif re.search(r"contract.?name|^name$", lab) and "F_NAME" not in guess:
+            guess["F_NAME"] = api
+        elif re.search(r"^type$|contract.?type", lab) and "F_TYPE" not in guess:
+            guess["F_TYPE"] = api; out["type_values"] = _pl(f)
+        elif re.search(r"^amount|value", lab) and dt in ("currency", "double", "integer", "bigint") and "F_AMOUNT" not in guess:
+            guess["F_AMOUNT"] = api
+        elif re.search(r"billing.?period", lab) and "F_PERIOD" not in guess:
+            guess["F_PERIOD"] = api; out["period_values"] = _pl(f)
+        elif re.search(r"start", lab) and dt in ("date", "datetime") and "F_START" not in guess:
+            guess["F_START"] = api
+        elif re.search(r"end.?date|expir", lab) and dt in ("date", "datetime") and "F_END" not in guess:
+            guess["F_END"] = api
+    out["guess"] = guess
+    for f in _fields("Deals"):
+        if f.get("api_name") == "Stage":
+            out["stages"] = _pl(f)
+    for f in _fields("Accounts"):
+        if f.get("api_name") == "Account_Type":
+            out["account_types"] = _pl(f)
+    return out
+
+def _zoho_automation_ui():
+    st.markdown("**Signed paperwork automation** - when a customer signs paperwork sent with the ⚡ buttons, Zoho opens the "
+                "account, files the signed PDF under Legal Contracts, marks the deal won and raises the onboarding tickets.")
+    if not _zoho_configured():
+        st.info("Connect Zoho above first (with the 'Look-ups + deals + Zoho Sign' scope).")
+        return
+    if st.button("1. Read my Zoho set-up", key="za_read"):
+        try:
+            st.session_state["_za_setup"] = _zoho_read_automation_setup()
+        except Exception as e:
+            st.error(f"Couldn't read Zoho: {e}")
+    su = st.session_state.get("_za_setup")
+    if not su:
+        st.caption("Reads the Legal Contracts fields, your deal stages and account types, so the Zoho function uses the right names.")
+        return
+    for n in su.get("notes") or []:
+        st.warning(n)
+    with st.expander("Legal Contracts fields found in Zoho", expanded=False):
+        st.caption("\n".join(f"{l} -> {a} ({t})" for l, a, t in su.get("contract_fields") or []) or "none")
+    cfg = dict(ZOHO_AUTO_DEFAULTS); cfg.update(su.get("guess") or {})
+    def _pick(label, key, options, help=None):
+        opts = list(dict.fromkeys([cfg.get(key) or ""] + [o for o in (options or []) if o]))
+        cfg[key] = st.selectbox(label, opts, key=f"za_{key}", help=help) if len(opts) > 1 else \
+            st.text_input(label, value=cfg.get(key) or "", key=f"za_{key}", help=help)
+    st.markdown("**2. Check these, then copy the function into Zoho**")
+    c1, c2 = st.columns(2)
+    with c1:
+        cfg["F_ACCOUNT"] = st.text_input("Legal Contracts: field linking to the Account (API name)", value=cfg["F_ACCOUNT"], key="za_F_ACCOUNT",
+                                         help="Found automatically - it's the lookup field that makes the contract appear on the account.")
+        cfg["F_START"] = st.text_input("Legal Contracts: start date field (blank if there isn't one)", value=cfg["F_START"], key="za_F_START")
+        cfg["F_END"] = st.text_input("Legal Contracts: end date field", value=cfg["F_END"], key="za_F_END")
+        _pick("Contract type for new agreements", "TYPE_VALUE", su.get("type_values"))
+        _pick("Billing period", "PERIOD_VALUE", su.get("period_values"))
+    with c2:
+        _pick("Deal stage once signed", "WON_STAGE", su.get("stages"))
+        _pick("Account type once signed (blank = leave it)", "ACCOUNT_TYPE", [""] + (su.get("account_types") or []))
+        cfg["DEPT_PROV"] = st.text_input("Desk department - provisioning", value=cfg["DEPT_PROV"], key="za_DEPT_PROV")
+        cfg["DEPT_BILL"] = st.text_input("Desk department - billing", value=cfg["DEPT_BILL"], key="za_DEPT_BILL",
+                                         help="Must match the department name in Zoho Desk exactly (capitals don't matter).")
+    if not cfg["F_ACCOUNT"]:
+        st.warning("No field linking Legal Contracts to Accounts was found - type its API name above, or the contract won't show on the account.")
+    _stages = su.get("stages") or []
+    _sent = _secret("ZOHO_STAGE_SENT") or "Negotiation/Review"
+    if _stages and _sent not in _stages:
+        st.warning(f"The stage used while paperwork is out ('{_sent}') isn't one of your deal stages. Add the right one to Secrets, e.g. "
+                   f'ZOHO_STAGE_SENT = "{next((s for s in _stages if re.search("negot|quote|proposal|contract", s, re.I)), _stages[0])}"')
+    _code = zoho_build_signed_fn(cfg, _zoho_dc())
+    st.download_button("📥 Download the CRM function (syc_signed_paperwork.dg)", data=_code, file_name="syc_signed_paperwork.dg",
+                       mime="text/plain", key="za_dl")
+    with st.expander("Show the CRM function", expanded=False):
+        st.code(_code, language="java")
+    st.markdown("**3. Connect Zoho Flow**")
+    _url = st.text_input("Paste the function's REST API (API key) URL here", key="za_url",
+                         placeholder="https://www.zohoapis.eu/crm/v7/functions/syc_signed_paperwork/actions/execute?auth_type=apikey&zapikey=...")
+    st.code(ZOHO_FLOW_FN.replace("__CRM_URL__", _url.strip() or "PASTE-THE-API-KEY-URL-HERE"), language="java")
+    st.caption("The full step-by-step set-up (connections, function, Flow) is in the guide that came with this update.")
 
 # Apply a pending "fill from Zoho" before the customer widgets are drawn
 if "_zoho_fill" in st.session_state:
@@ -1920,6 +2724,14 @@ with st.sidebar:
                 if st.button("Fill the quote from this lead" if _is_lead else "Fill the quote from this deal" if _is_deal else "Fill the quote from this account", key="_zoho_fill_btn", type="primary", use_container_width=True):
                     st.session_state["_zoho_fill"] = _zoho_fill_values(_zrec, _zc, _zrent, _zsettle)
                     _zf = st.session_state["_zoho_fill"]
+                    # remember which Zoho record this quote belongs to (used when the paperwork is sent through Zoho)
+                    _zf.update({"q_zl_type": _za.get("_type") or "Account", "q_zl_id": str(_za["id"]),
+                                "q_zl_name": str(_za.get("Account_Name") or ""),
+                                "q_zl_acct": str((_za.get("_acct_id") or _zrec.get("_acct_id") or "") if _is_deal else ("" if _is_lead else _za["id"])),
+                                "q_zl_deal": str(_za["id"]) if _is_deal else "", "q_zs_cis": "", "q_zs_pack": ""})
+                    if _zc:
+                        _zf["zs_signer_name"] = str(_zc.get("Full_Name") or "")
+                        _zf["zs_signer_email"] = str(_zc.get("Email") or "")
                     _zx = [n for k, n in (("q_employees", "system users"), ("q_curr_system", "monthly rental"), ("q_term_lease", "settlement")) if k in _zf]
                     st.session_state["_zoho_msg"] = (f"Filled from {_za.get('Account_Name', 'Zoho')}"
                                                      + (f" (incl. {', '.join(_zx)})" if _zx else "") + " - check the details below.")
@@ -4360,6 +5172,8 @@ def build_proposal_pdf(sign=None, cis=False):
         else:
             p.set_draw_color(120, 128, 150); p.set_line_width(0.3)
             p.line(M + 12, by_ + 13, M + 82, by_ + 13)
+            _zt = zs_text_tag(p, 66)                        # invisible Zoho Sign tag: the signature box lands here
+            p.set_text_color(255, 255, 255); p.set_xy(M + 10, by_ + 3); p.cell(70, 8, _zt)
         p.set_font("Helvetica", "", 7); p.set_text_color(*MUTED)
         p.set_xy(M + 8, by_ + 17.5); p.cell(CW - 16, 4, _ps(sig_label))
         p.set_font("Helvetica", "B", 8.5); p.set_text_color(*TEXT)
@@ -6487,7 +7301,13 @@ def sig_block(pdf, heading, sign, note=""):
         except Exception:
             pass
         pdf.set_y(y + 18.5)
-    else:
+    else:   # invisible Zoho Sign text tag (white) - Zoho Sign places the signature field here
+        pdf.set_font("Helvetica", "", 18); pdf.set_text_color(255, 255, 255)
+        _zt = "{{S}}"
+        while pdf.get_string_width(_zt[:-2] + " }}") <= 60 and len(_zt) < 120:
+            _zt = _zt[:-2] + " }}"
+        pdf.set_xy(pdf.l_margin, y + 2); pdf.cell(64, 9, _zt)
+        pdf.set_text_color(0, 0, 0)
         pdf.set_y(y + 14)
     pdf.cell(80, 0.4, "", border="T", ln=True)
     pdf.ln(1)
@@ -7284,6 +8104,12 @@ def cover_page(pdf, cfg, who, title_line, tiles, docs, services=None, prepared_b
             pdf.image(io.BytesIO(sb), x=20, y=y0 + 7, w=60, h=20, keep_aspect_ratio=True)
         except Exception:
             pass
+    else:   # invisible Zoho Sign text tag (white on white) - Zoho Sign places the signature field here
+        pdf.set_font("Helvetica", "", 20); pdf.set_text_color(255, 255, 255)
+        _zt = "{{S}}"
+        while pdf.get_string_width(_zt[:-2] + " }}") <= 78 and len(_zt) < 120:
+            _zt = _zt[:-2] + " }}"
+        pdf.set_xy(19, y0 + 11); pdf.cell(82, 9, _zt)
     # name / position / company / date
     rows = [("Name", sign.get("name") or who.get("contact", "")), ("Position", sign.get("position") or who.get("position", "")),
             ("Company", who.get("company", "")), ("Date", sign.get("date", ""))]
@@ -7365,6 +8191,12 @@ def mandate_page(pdf, cfg, q, cust, bank, sign=None):
             pdf.image(io.BytesIO(sb), x=20, y=y0 + 7, w=60, h=20, keep_aspect_ratio=True)
         except Exception:
             pass
+    else:   # invisible Zoho Sign text tag (white on white) - Zoho Sign places the signature field here
+        pdf.set_font("Helvetica", "", 20); pdf.set_text_color(255, 255, 255)
+        _zt = "{{S}}"
+        while pdf.get_string_width(_zt[:-2] + " }}") <= 78 and len(_zt) < 120:
+            _zt = _zt[:-2] + " }}"
+        pdf.set_xy(19, y0 + 11); pdf.cell(82, 9, _zt)
     rows = [("Name", sign.get("name") or cust.get("contact", "")), ("Company", cust.get("company", "")),
             ("Date", sign.get("date", ""))]
     for i, (k, v) in enumerate(rows):
@@ -10041,6 +10873,81 @@ with tab6:
         _ts = _dtnow.now().strftime("%d/%m/%Y  %H:%M")
 
         _two = n_packs() >= 2
+
+        # ── Send through Zoho: the deal is recorded in Zoho and the envelope carries its reference, so the
+        #    signed paperwork files itself (account, Legal Contract, onboarding tickets) when it comes back.
+        _zs_ok = _zoho_configured()
+        with st.container(border=True):
+            st.markdown("#### ⚡ Send through Zoho (automatic)")
+            if not _zs_ok:
+                st.caption("Zoho isn't connected yet - an admin sets it up in the Admin panel. You can still use the manual Zoho Sign links below.")
+            else:
+                _zl_t, _zl_n = st.session_state.get("q_zl_type"), st.session_state.get("q_zl_name")
+                _zl_deal = st.session_state.get("q_zl_deal")
+                if _zl_deal:
+                    st.caption(f"Linked to Zoho deal {_zl_deal}" + (f" ({_zl_n})" if _zl_n else "") + " - it is updated each time you send.")
+                elif _zl_t:
+                    st.caption(f"Linked to the Zoho {_zl_t.lower()} '{_zl_n}'. A deal is created "
+                               + ("on that account" if _zl_t == "Account" else "for this lead (converted to an account once signed)")
+                               + " when you first send.")
+                else:
+                    st.caption("Not linked to anything in Zoho - a new deal is created when you send, and the account is opened once the "
+                               "paperwork is signed. If the customer is already in Zoho, use 'Pull customer from Zoho' in the left panel first.")
+                if _zl_t or _zl_deal:
+                    if st.button("Unlink from Zoho", key="zs_unlink"):
+                        for _k in ("q_zl_type", "q_zl_id", "q_zl_name", "q_zl_acct", "q_zl_deal", "q_zs_cis", "q_zs_pack"):
+                            st.session_state[_k] = ""
+                        st.rerun()
+                if not st.session_state.get("zs_signer_name"):
+                    st.session_state["zs_signer_name"] = (contact_name or "").partition(" - ")[0].strip()
+                if not st.session_state.get("zs_signer_email"):
+                    st.session_state["zs_signer_email"] = (director_email or "").strip()
+                _zs1, _zs2 = st.columns(2)
+                with _zs1:
+                    st.text_input("Signer's name", key="zs_signer_name")
+                with _zs2:
+                    st.text_input("Signer's email", key="zs_signer_email")
+                st.caption("Use the ⚡ buttons at steps 2 and 5. Zoho Sign emails the customer, and when they sign, Zoho opens the "
+                           "account, files the signed documents under Legal Contracts and raises the onboarding tickets.")
+
+        def _zs_send_ui(pdf_bytes, file_name, kind, primary, label, req_key, btn_key):
+            """⚡ button: send this PDF through Zoho Sign (and show its progress if it has been sent)."""
+            if not _zs_ok:
+                return
+            _rid = st.session_state.get(req_key)
+            if _rid:
+                _c1, _c2 = st.columns([3, 2])
+                with _c1:
+                    st.caption(f"⚡ Sent through Zoho Sign (request {_rid}).")
+                with _c2:
+                    if st.button("🔄 Has it been signed?", key=btn_key + "_chk", use_container_width=True):
+                        try:
+                            _stt = sign_status(_rid)
+                            st.session_state[btn_key + "_stt"] = _stt
+                            if _stt == "completed" and kind == "cis":
+                                st.session_state["cis_done"] = True
+                                st.rerun()
+                        except Exception as _e:
+                            st.session_state[btn_key + "_stt"] = f"couldn't check ({_e})"
+                _stt = st.session_state.get(btn_key + "_stt")
+                if _stt:
+                    (st.success if _stt == "completed" else st.info)(
+                        "Signed and returned." if _stt == "completed" else f"Zoho Sign status: {_stt}")
+                if not st.checkbox("Send it again", key=f"{btn_key}_again_{st.session_state.get(btn_key + '_n', 0)}"):
+                    return
+            if pdf_bytes is None:
+                return
+            if st.button(f"⚡ Send the {label} through Zoho Sign for me", key=btn_key, type="primary", use_container_width=True):
+                try:
+                    with st.spinner("Recording the deal in Zoho and sending..."):
+                        _did, _rid = zoho_send_for_signature(pdf_bytes, file_name, kind, primary, label)
+                    st.session_state[req_key] = _rid
+                    st.session_state.pop(btn_key + "_stt", None)
+                    st.session_state[btn_key + "_n"] = st.session_state.get(btn_key + "_n", 0) + 1   # fresh 'Send it again' box
+                    st.success(f"Sent to {st.session_state.get('zs_signer_email')} - Zoho deal {_did} updated.")
+                except Exception as _e:
+                    st.error(str(_e))
+
         st.markdown("### 🧭 Signing steps")
         _unsigned_bytes = build_pdf(sig_bytes=None, curr_total=current_total, curr_bb=current_bb,
                                     curr_system=current_system, curr_calls=current_calls, curr_mobile=current_mobile)
@@ -10062,6 +10969,8 @@ with tab6:
                 else:
                     st.caption("Add the signature and name (step 3) to sign it here.")
             st.markdown("#### Step 2 - Send it via Zoho Sign")
+            _zs_send_ui(_cis_blank, f"SYComms_{safe}_ContractInfoSheet_{date.today()}.pdf", "cis", False,
+                        "Contract Information Sheet", "q_zs_cis", "zs_btn_cis")
             st.link_button("Open Zoho Sign - send the Contract Information Sheet →", "https://sign.zoho.eu")
             _cis_done = st.checkbox("Step 2 complete - the customer has signed it and it has been returned", key="cis_done")
         else:
@@ -10080,6 +10989,7 @@ with tab6:
         if cs_crm_missing:
             st.warning("Call Scope is held back from the pack until the customer's CRM is entered in the Call Scope card.")
         _signed_bytes = None
+        _zs_pack_bytes = None      # what the ⚡ button at step 5 sends
         _sgx = {"sig_bytes": sig_bytes, "name": sig_name, "company": comp_name or "", "ts": _ts, "ip": _client_ip}
         if sig_bytes and sig_name and _cis_done:
             if _tele_any:
@@ -10089,6 +10999,8 @@ with tab6:
             try:
                 _main = build_combined(_signed_bytes, _sgx) if (_two or not _tele_any) else _signed_bytes
                 st.session_state["_signed_pdf_bytes"]    = _main
+                if _tele_any:
+                    _zs_pack_bytes = _main
                 st.session_state["_signed_pdf_filename"] = f"{'Combined_Pack' if _two else 'SYComms'}_{safe}_SIGNED_{date.today()}.pdf"
                 st.download_button("✅ Download the " + ("COMBINED " if _two else "") + "signed pack", data=_main,
                                    file_name=st.session_state["_signed_pdf_filename"], mime="application/pdf",
@@ -10106,6 +11018,16 @@ with tab6:
         # ── Step 5 ────────────────────────────────────────────────────────────
         st.markdown("#### Step 5 - Send it via Zoho Sign")
         st.caption("Upload the signed pack. The customer signs the one 'Agreement to proceed' box that was left blank.")
+        if not _tele_any and not cs_crm_missing and (cs_active or ac_active):
+            # no telephony: the Call Scope / SteadyTemp packs go out unsigned, to be signed in Zoho Sign
+            try:
+                _zs_pack_bytes = build_combined(None)
+            except Exception:
+                _zs_pack_bytes = None
+        _zs_send_ui(_zs_pack_bytes, f"{'Combined_Pack' if _two else 'SYComms'}_{safe}_{date.today()}.pdf", "pack", True,
+                    "agreement pack", "q_zs_pack", "zs_btn_pack")
+        if _zs_ok and _zs_pack_bytes is None and not st.session_state.get("q_zs_pack"):
+            st.caption("⚡ The automatic send unlocks once the signed pack is ready at step 4.")
         st.link_button("Open Zoho Sign - send the signed pack →", "https://sign.zoho.eu")
 
         # ── Step 6 ────────────────────────────────────────────────────────────
@@ -11076,6 +11998,8 @@ if _show_admin:
             # ── TAB 6: Security ───────────────────────────────────────────────────
             with panel_tabs[9]:
                 _zoho_setup_ui("_zt")
+                st.markdown("---")
+                _zoho_automation_ui()
 
             with panel_tabs[8]:
                 st.markdown("**Change Admin Password**")
