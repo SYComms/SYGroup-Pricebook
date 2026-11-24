@@ -1981,6 +1981,7 @@ ZOHO_SIGNED_FN = r'''string standalone.__FN__(String request_id)
 	ACCOUNT_TYPE = "__ACCOUNT_TYPE__";
 	DEPT_PROVISIONING = "__DEPT_PROV__";
 	DEPT_BILLING = "__DEPT_BILL__";
+	BILLING_ASSIGNEE = "__BILL_AGENT__";
 	// ------------------------------------------------------------------------
 	report = list();
 	request_id = request_id.trim();
@@ -2454,6 +2455,34 @@ ZOHO_SIGNED_FN = r'''string standalone.__FN__(String request_id)
 				t2.put("description",body2);
 				t2.put("priority","Medium");
 				t2.put("contact",tcontact);
+				// assign it to the billing agent (looked up by name in Zoho Desk)
+				bill_agent = "";
+				if(BILLING_ASSIGNEE != "")
+				{
+					agents = invokeurl
+					[
+						url :DESK_BASE + "/agents?limit=200"
+						type :GET
+						headers:hdr
+						connection:"zohodesk"
+					];
+					for each ag in ifnull(agents.get("data"),list())
+					{
+						ag_name = ifnull(ag.get("name"),"").trim().toLowerCase();
+						if(bill_agent == "" && (ag_name == BILLING_ASSIGNEE.trim().toLowerCase() || ifnull(ag.get("emailId"),"").toLowerCase() == BILLING_ASSIGNEE.trim().toLowerCase()))
+						{
+							bill_agent = ag.get("id").toString();
+						}
+					}
+					if(bill_agent != "")
+					{
+						t2.put("assigneeId",bill_agent);
+					}
+					else
+					{
+						report.add("Desk agent '" + BILLING_ASSIGNEE + "' not found - billing ticket left unassigned");
+					}
+				}
 				r2 = invokeurl
 				[
 					url :DESK_BASE + "/tickets"
@@ -2462,6 +2491,20 @@ ZOHO_SIGNED_FN = r'''string standalone.__FN__(String request_id)
 					headers:hdr
 					connection:"zohodesk"
 				];
+				if(r2.get("id") == null && bill_agent != "")
+				{
+					// Desk refused the assignment (e.g. agent not in that department) - create it unassigned instead
+					t2.remove("assigneeId");
+					r2 = invokeurl
+					[
+						url :DESK_BASE + "/tickets"
+						type :POST
+						parameters:t2.toString()
+						headers:hdr
+						connection:"zohodesk"
+					];
+					report.add("Couldn't assign the billing ticket to " + BILLING_ASSIGNEE);
+				}
 				report.add("Billing ticket: " + ifnull(r2.get("ticketNumber"),r2.toString()));
 			}
 			else
@@ -2502,7 +2545,7 @@ ZOHO_AUTO_DEFAULTS = {
     "FN": "syc_signed_paperwork", "CONTRACT_MODULE": "Contracts", "F_ACCOUNT": "", "F_NAME": "Name",
     "F_TYPE": "Type", "TYPE_VALUE": "Network Services Agreement", "F_AMOUNT": "Amount", "F_PERIOD": "Billing_Period",
     "PERIOD_VALUE": "Monthly", "F_START": "", "F_END": "End_Date", "WON_STAGE": "Closed Won", "ACCOUNT_TYPE": "Customer",
-    "DEPT_PROV": "SYC - Broadband and Provisioning", "DEPT_BILL": "SYC - Billing Invoice Queries",
+    "DEPT_PROV": "SYC - Broadband and Provisioning", "DEPT_BILL": "SYC - Billing Invoice Queries", "BILL_AGENT": "Rebecca Bradford",
 }
 
 def zoho_build_signed_fn(cfg, dc="eu"):
@@ -2589,6 +2632,8 @@ def _zoho_automation_ui():
         cfg["DEPT_PROV"] = st.text_input("Desk department - provisioning", value=cfg["DEPT_PROV"], key="za_DEPT_PROV")
         cfg["DEPT_BILL"] = st.text_input("Desk department - billing", value=cfg["DEPT_BILL"], key="za_DEPT_BILL",
                                          help="Must match the department name in Zoho Desk exactly (capitals don't matter).")
+        cfg["BILL_AGENT"] = st.text_input("Assign billing tickets to (Desk agent name or email)", value=cfg["BILL_AGENT"], key="za_BILL_AGENT",
+                                          help="Blank leaves billing tickets unassigned.")
     if not cfg["F_ACCOUNT"]:
         st.warning("No field linking Legal Contracts to Accounts was found - type its API name above, or the contract won't show on the account.")
     _stages = su.get("stages") or []
