@@ -1393,7 +1393,7 @@ def zoho_lead_info(rec):
 
 def zoho_load_contracts(account_id):
     """Legal Contracts (custom module) linked to the account -> (list of dicts, note for the debug view)."""
-    notes, mod = [], "CustomModule4"
+    notes, mod = [], "Contracts"
     fmap = {}
     try:   # find the field names by their on-screen labels (needs the settings scope)
         fj = _zoho_get("settings/fields", {"module": mod})
@@ -2299,7 +2299,7 @@ ZOHO_FLOW_FN = r'''void syc_signed_paperwork_to_crm(string request_id)
 '''
 
 ZOHO_AUTO_DEFAULTS = {
-    "FN": "syc_signed_paperwork", "CONTRACT_MODULE": "CustomModule4", "F_ACCOUNT": "", "F_NAME": "Name",
+    "FN": "syc_signed_paperwork", "CONTRACT_MODULE": "Contracts", "F_ACCOUNT": "", "F_NAME": "Name",
     "F_TYPE": "Type", "TYPE_VALUE": "Network Services Agreement", "F_AMOUNT": "Amount", "F_PERIOD": "Billing_Period",
     "PERIOD_VALUE": "Monthly", "F_START": "", "F_END": "End_Date", "WON_STAGE": "Closed Won", "ACCOUNT_TYPE": "Customer",
     "DEPT_PROV": "SYC - Broadband and Provisioning", "DEPT_BILL": "SYC - Billing",
