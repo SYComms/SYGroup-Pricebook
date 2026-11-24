@@ -1648,6 +1648,38 @@ def zs_text_tag(pdf, width_mm, size=20):
         tag = tag[:-2] + " }}"
     return tag
 
+def zs_tag_over(pdf, x, y, w, kind="S", size=16):
+    """Draw an invisible (white) Zoho Sign text tag - S signature, I initials, SD date signed - at x,y about w mm wide.
+    Font, colour, position and page-break setting are put back afterwards, so the page layout doesn't change."""
+    fam, sty, sz = pdf.font_family, pdf.font_style, pdf.font_size_pt
+    tc, sx, sy = pdf.text_color, pdf.get_x(), pdf.get_y()
+    apb, bm = pdf.auto_page_break, pdf.b_margin
+    pdf.set_auto_page_break(False)
+    try:
+        pdf.set_font("Helvetica", "", size)
+        tag = "{{" + kind + "}}"
+        while pdf.get_string_width(tag[:-2] + " }}") <= w and len(tag) < 120:
+            tag = tag[:-2] + " }}"
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_xy(x, y); pdf.cell(w + 4, size * 0.3528 + 1, tag)
+    finally:
+        pdf.set_auto_page_break(apb, bm)
+        pdf.text_color = tc
+        try:
+            pdf.set_font(fam, sty, sz)
+        except Exception:
+            pass
+        pdf.set_xy(sx, sy)
+
+def zs_sig_cell(pdf, text="Signed: ________________", h=14):
+    """An unsigned 'Signed: ____' line that carries a Zoho Sign signature tag on the underline."""
+    lab = text.split("_")[0]
+    x0, p0 = pdf.get_x(), pdf.page
+    off = pdf.get_string_width(lab)
+    pdf.cell(0, h, text, ln=True)
+    cy = pdf.get_y() - h
+    zs_tag_over(pdf, x0 + off, cy + h / 2 - 3, 52)
+
 def _sign_base():
     return f"https://sign.zoho.{_zoho_dc()}/api/v1"
 
@@ -1852,7 +1884,7 @@ def zoho_manual_file_name(prefix, company_stub, deal_id, kind, primary):
     return f"{clean(prefix) or 'SYComms'}_{stub}_{date.today().isoformat()}_SYC-{deal_id}-{kind}-{'P' if primary else 'S'}.pdf"
 
 def zoho_record_for_manual(pdf_bytes, prefix, company_stub, kind, primary, label):
-    """Everything the ⚡ button does except the Zoho Sign call: the deal (with the SYCDATA: line) and a note.
+    """Records the deal for a manual Zoho Sign upload: the deal (with the SYCDATA: line) and a note.
     Returns (deal_id, file_name) - the file name carries the reference the CRM function looks for."""
     d = zoho_order_data()
     deal_id = zoho_ensure_deal(d)
@@ -2434,7 +2466,7 @@ def _zoho_read_automation_setup():
     return out
 
 def _zoho_automation_ui():
-    st.markdown("**Signed paperwork automation** - when a customer signs paperwork prepared with the 📝 (or ⚡) buttons, Zoho opens the "
+    st.markdown("**Signed paperwork automation** - when a customer signs paperwork prepared with the 📝 buttons in Sign & Send, Zoho opens the "
                 "account, files the signed PDF under Legal Contracts, marks the deal won and raises the onboarding tickets.")
     if not _zoho_configured():
         st.info("Connect Zoho above first (with the 'Look-ups + deals + Zoho Sign' scope).")
@@ -4519,6 +4551,8 @@ def _loa_pages(pdf, add_header, sig_bytes=None, sig_ts=""):
     def requester_block(y, with_sig):
         hdr_cell(L, y, W, 7, "Requester's Details"); y += 7
         lab(L, y, 38, 14, "Signed"); pdf.set_xy(L + 38, y); pdf.cell(W - 38, 14, "", border=1)
+        if with_sig and not (sig_bytes and len(sig_bytes) > 100):
+            zs_tag_over(pdf, L + 41, y + 3, 70)          # Zoho Sign places the signature here
         if with_sig and sig_bytes and len(sig_bytes) > 100:
             try:
                 import tempfile as _t, os as _o
@@ -4534,7 +4568,7 @@ def _loa_pages(pdf, add_header, sig_bytes=None, sig_ts=""):
         lab(L, y, 38, 7, "Print Name"); val(L + 38, y, 62, 7, d["name"])
         lab(L + 100, y, 22, 7, "Job title"); val(L + 122, y, W - 122, 7, d["title"]); y += 7
         lab(L, y, 38, 7, "Date (DD/MM/YYYY)")
-        val(L + 38, y, 62, 7, (sig_ts.split()[0] if (sig_bytes and sig_ts) else (date.today().strftime("%d/%m/%Y") if sig_bytes else "")))
+        val(L + 38, y, 62, 7, (sig_ts.split()[0] if (sig_bytes and sig_ts) else date.today().strftime("%d/%m/%Y")))
         lab(L + 100, y, 22, 7, "Email"); val(L + 122, y, W - 122, 7, d["email"])
         return y + 7
 
@@ -5262,7 +5296,7 @@ def build_proposal_pdf(sign=None, cis=False):
         p.set_font("Helvetica", "B", 8.5); p.set_text_color(*TEXT)
         p.set_xy(M + 92, by_ + 1.5); p.cell(CW - 100, 5, _ps(f"Name: {sign.get('name') or ''}"))
         p.set_xy(M + 92, by_ + 7.5); p.cell(CW - 100, 5, _ps(f"Company: {sign.get('company') or comp_name or ''}"))
-        p.set_xy(M + 92, by_ + 13.5); p.cell(CW - 100, 5, _ps(f"Date: {str(sign.get('timestamp') or '')[:10]}"))
+        p.set_xy(M + 92, by_ + 13.5); p.cell(CW - 100, 5, _ps(f"Date: {str(sign.get('timestamp') or date.today().strftime('%d/%m/%Y'))[:10]}"))
 
     _intro_pack = (f"I confirm that I would like {_CO} to proceed with the services and equipment in this proposal, "
                    "subject to the Order Form, Network Services & Broadband Agreement and Terms & Conditions in this pack.")
@@ -5978,7 +6012,12 @@ def _build_pdf_core(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='
             pdf.cell(pdf.epw - 96, 5, s(f"Date:  {str(sig_timestamp or date.today())[:10]}"))
             pdf.set_y(_sy + 14)
         else:
+            _wx, _wy2 = pdf.get_x(), pdf.get_y()
+            _wt1 = "Customer initials:  "
+            _wt2 = "Customer initials:  ____________        Date:  "
             pdf.cell(pdf.epw - 6, 8, "Customer initials:  ____________        Date:  ____________", fill=True, ln=True)
+            zs_tag_over(pdf, _wx + pdf.get_string_width(_wt1), _wy2 + 1.5, 20, kind="I", size=12)
+            zs_tag_over(pdf, _wx + pdf.get_string_width(_wt2), _wy2 + 1.5, 22, kind="SD", size=12)
         pdf.rect(pdf.l_margin + 1.5, _wy - 1, pdf.epw - 3, pdf.get_y() - _wy + 2)
         pdf.set_draw_color(0, 0, 0); pdf.set_line_width(0.2); pdf.ln(3)
 
@@ -6205,9 +6244,9 @@ def _build_pdf_core(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='
                 _os2.unlink(_stf_path)
             pdf.ln(16)
         except Exception:
-            pdf.cell(0, 14, "Signed: ________________", ln=True)
+            zs_sig_cell(pdf, "Signed: ________________")
     else:
-        pdf.cell(0, 14, "Signed: ________________", ln=True)
+        zs_sig_cell(pdf, "Signed: ________________")
     pdf.set_font("Helvetica", "", 9)
     _la_contact_raw = sig_name or _contact or ""
     _la_parts = [p.strip() for p in _la_contact_raw.split(" - ", 1)]
@@ -6272,9 +6311,9 @@ def _build_pdf_core(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='
                     _os3.unlink(_stf3_path)
                 pdf.ln(16)
             except Exception:
-                pdf.cell(0, 14, "Signed: ________________", ln=True)
+                zs_sig_cell(pdf, "Signed: ________________")
         else:
-            pdf.cell(0, 14, "Signed: ________________", ln=True)
+            zs_sig_cell(pdf, "Signed: ________________")
         pdf.cell(0, 5, f"Name: {_la_name}", ln=True)
         pdf.cell(0, 5, f"Position / Title: {_la_pos}", ln=True)
         pdf.cell(0, 5, f"Date: {date.today().strftime('%d/%m/%Y')}", ln=True)
@@ -6444,9 +6483,9 @@ def _build_pdf_core(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='
                 finally:
                     _os2.unlink(_stf_path)
                 pdf.ln(15)
-            except Exception: pdf.cell(0,14,"Signature: ________________",ln=True)
+            except Exception: zs_sig_cell(pdf, "Signature: ________________")
         else:
-            pdf.cell(0,14,"Signature: ________________",ln=True)
+            zs_sig_cell(pdf, "Signature: ________________")
         pdf.cell(0,5,f"Date: {date.today().strftime('%d/%m/%Y')}",ln=True)
         pdf.set_font("Helvetica","I",7); pdf.set_text_color(128,128,128)
         pdf.multi_cell(pdf.epw,3.5,"I confirm that I am authorised to sign this agreement on behalf of the Customer.",align="C")
@@ -6588,9 +6627,9 @@ def _build_pdf_core(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='
                     _os2.unlink(_stf_path)
                 pdf.ln(16)
             except Exception:
-                pdf.cell(0,14,"Signed: ________________",ln=True)
+                zs_sig_cell(pdf, "Signed: ________________")
         else:
-            pdf.cell(0,14,"Signed: ________________",ln=True)
+            zs_sig_cell(pdf, "Signed: ________________")
         pdf.ln(2)
         pdf.set_font("Helvetica","I",7.5); pdf.set_text_color(80,80,80)
         pdf.cell(0,4,"Annual price review applies after inclusive period. Subject to standard Terms & Conditions.",ln=True,align="C")
@@ -6741,9 +6780,9 @@ def _build_pdf_core(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='
                 _os2.unlink(_stf_path)
             pdf.ln(16)
         except Exception:
-            pdf.cell(0,14,"Signed: ________________",ln=True)
+            zs_sig_cell(pdf, "Signed: ________________")
     else:
-        pdf.cell(0,14,"Signed: ________________",ln=True)
+        zs_sig_cell(pdf, "Signed: ________________")
     pdf.ln(2)
     pdf.set_font("Helvetica","I",7.5)
     pdf.set_text_color(80,80,80)
@@ -6819,9 +6858,9 @@ def _build_pdf_core(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='
                     _os_pr.unlink(_spr_path)
                 pdf.ln(14)
             except Exception:
-                pdf.cell(0, 14, "________________________________", ln=True)
+                zs_sig_cell(pdf, "________________________________")
         else:
-            pdf.cell(0, 14, "________________________________", ln=True)
+            zs_sig_cell(pdf, "________________________________")
         pdf.set_text_color(0, 0, 0)
 
     # ── TERMS & CONDITIONS PAGE ──────────────────────────────────────
@@ -6891,9 +6930,9 @@ def _build_pdf_core(sig_bytes=None, sig_name='', sig_company='', sig_timestamp='
                 _os_tc.unlink(_stc_path)
             pdf.ln(14)
         except Exception:
-            pdf.cell(0, 14, "________________________________", ln=True)
+            zs_sig_cell(pdf, "________________________________")
     else:
-        pdf.cell(0, 14, "________________________________", ln=True)
+        zs_sig_cell(pdf, "________________________________")
     pdf.set_text_color(0, 0, 0)
 
     # ── AUDIT CERTIFICATE PAGE - DocuSign-style ─────────────────────────────
@@ -7089,6 +7128,13 @@ def _embed_sig(pdf_obj, sig_bytes, x=15, w=65, h=20,
       Signed: Name | Company | Date  (italic, left-aligned, below image)
     Then the signature underline is drawn by the caller.
     """
+    if not (sig_bytes and len(sig_bytes) > 100):
+        # unsigned: leave room for the signature, with a Zoho Sign tag so the field places itself
+        _yz = pdf_obj.get_y()
+        if _yz + 14 > pdf_obj.page_break_trigger:
+            pdf_obj.add_page(); _yz = pdf_obj.get_y()
+        zs_tag_over(pdf_obj, x, _yz + 2, 60)
+        pdf_obj.set_y(_yz + 12)
     if not (sig_bytes or signer_name):
         return
     try:
@@ -7402,7 +7448,7 @@ def sig_block(pdf, heading, sign, note=""):
         co = sign.get("company", "")
     else:
         nm, ps = split_name_pos(Q("q_signatory"))
-        when, co = "", Q("q_company")
+        when, co = date.today().strftime("%d/%m/%Y"), Q("q_company")
     pdf.set_font(FONT, "", 8.5)
     pdf.cell(95, 5, s(f"Name:  {nm or '____________________________'}"), ln=False)
     pdf.cell(0, 5, s(f"Date:  {when or '____ / ____ / ________'}"), ln=True)
@@ -7735,7 +7781,8 @@ def build_steadytemp_pack(sign=None):
 
 
 def _sign_cs(sg):
-    return None if not sg else {"sig": sg["sig_bytes"], "name": sg["name"], "date": date.today().strftime("%d/%m/%Y")}
+    return None if not sg else {"sig": sg["sig_bytes"], "name": sg["name"], "date": date.today().strftime("%d/%m/%Y"),
+                                "cover_blank": bool(sg.get("cover_blank"))}
 
 
 def _sign_st(sg):
@@ -8312,7 +8359,8 @@ def customer_pack(cfg, q, cust, terms, prepared_by="", sign=None, bank=None, not
                f"Prepared {date.today().strftime('%d %B %Y')}" + (f" by {prepared_by}" if prepared_by else ""),
                [("Monthly" + (" (year 1)" if stepped else ""), money(q["monthly_total"])), ("Minimum term", f"{q['term']} months"),
                 ("One-off set-up", setup_txt), ("Starts", "On go-live")],
-               docs, services=[(l["name"], l["qty"]) for l in q["lines"]], prepared_by=prepared_by, sign=sign)
+               docs, services=[(l["name"], l["qty"]) for l in q["lines"]], prepared_by=prepared_by,
+               sign=(dict(sign, sig=None) if (sign and sign.get("cover_blank")) else sign))
     pdf.label = "SERVICE ORDER"
     pdf.add_page()
     today = date.today().strftime("%d %B %Y")
@@ -8495,7 +8543,7 @@ def build_callscope_pack(sign=None):
     bank = {"bank": G("q_bank_name") or "", "holder": G("q_acc_holder") or G("q_comp_name") or "", "accno": G("q_acc_no") or "",
             "sort": G("q_sort_code") or "", "addr": G("q_bank_addr") or ""}
     sg = {"sig": sign.get("sig"), "name": sign.get("name") or parts[0], "position": parts[1] if len(parts) > 1 else "",
-          "date": sign.get("date", "")}
+          "date": sign.get("date") or date.today().strftime("%d/%m/%Y"), "cover_blank": bool(sign.get("cover_blank"))}
     return _csx.customer_pack(cfgx, cs_quote, cust, cs_terms_list(cs_quote["term"]), prepared_by=_prepared_by(), sign=sg,
                               bank=bank, notes=cs_notes, price_note=_CS_PRICE_NOTE)
 
@@ -10827,424 +10875,320 @@ with tab6:
     </div>
     """, unsafe_allow_html=True)
 
-    sign_col, send_col = st.columns([3, 2])
+    safe = (comp_name or "quote").replace(" ", "_")
+    from datetime import datetime as _dtnow
+    _ts = _dtnow.now().strftime("%d/%m/%Y  %H:%M")
+    _two = n_packs() >= 2
+    _zs_ok = _zoho_configured()
+    _pack_prefix = "Combined_Pack" if _two else "SYComms"
 
-    with sign_col:
-        st.markdown("### Customer Signature")
-        st.caption("Ask the customer to sign below, or photograph their signature.")
+    # ── How is the customer signing? ─────────────────────────────────────────
+    st.markdown("### How is the customer signing?")
+    _mode = st.radio("How is the customer signing?",
+                     ["🖊️ In person - they sign here in the app", "📧 Remote - they sign everything in Zoho Sign"],
+                     horizontal=True, key="sign_mode", label_visibility="collapsed")
+    _inperson = _mode.startswith("🖊️")
 
-        # Two options: draw on screen OR upload photo
-        sig_method = st.radio(
-            "Capture method:",
-            ["Draw on screen", "Upload photo of signature"],
-            horizontal=True, key="sig_method_radio"
-        )
+    # Which Zoho record this paperwork is filed against
+    if _zs_ok:
+        _zl_t, _zl_n = st.session_state.get("q_zl_type"), st.session_state.get("q_zl_name")
+        _zl_deal = st.session_state.get("q_zl_deal")
+        if _zl_deal:
+            _zl_txt = f"Linked to Zoho deal {_zl_deal}" + (f" ({_zl_n})" if _zl_n else "") + "."
+        elif _zl_t:
+            _zl_txt = (f"Linked to the Zoho {_zl_t.lower()} '{_zl_n}'. A deal is created "
+                       + ("on that account" if _zl_t == "Account" else "for this lead (converted to an account once signed)")
+                       + " when you press 📝.")
+        else:
+            _zl_txt = ("Not linked to anything in Zoho - a new deal is created when you press 📝, and the account is opened once the "
+                       "paperwork is signed. If the customer is already in Zoho, use 'Pull customer from Zoho' in the left panel first.")
+        _zc1, _zc2 = st.columns([5, 1])
+        with _zc1:
+            st.caption("🔗 " + _zl_txt)
+        with _zc2:
+            if (_zl_t or _zl_deal) and st.button("Unlink", key="zs_unlink", use_container_width=True):
+                for _k in ("q_zl_type", "q_zl_id", "q_zl_name", "q_zl_acct", "q_zl_deal", "q_zs_cis", "q_zs_pack"):
+                    st.session_state[_k] = ""
+                for _k in ("zs_ip_pack_manual", "zs_rm_cis_manual", "zs_rm_pack_manual"):
+                    st.session_state.pop(_k, None)
+                st.rerun()
+    else:
+        st.warning("Zoho isn't connected, so signed paperwork won't file itself in Zoho. An admin can connect it in the Admin panel "
+                   "(🔗 Zoho). You can still download the paperwork below.")
 
-        if sig_method == "Upload photo of signature":
-            st.caption("Take a photo of the customer's handwritten signature or upload an image file.")
-            sig_upload = st.file_uploader(
-                "Signature image (JPG or PNG)", type=["jpg","jpeg","png"],
-                key="sig_photo_upload", label_visibility="collapsed"
-            )
-            if sig_upload:
-                from PIL import Image as _PILImage
-                _simg = _PILImage.open(sig_upload).convert("RGB")
-                # Resize to standard signature dimensions
-                _simg = _simg.resize((400, 120), _PILImage.LANCZOS)
-                _sbuf = io.BytesIO()
-                _simg.save(_sbuf, format="PNG")
-                st.session_state["_sig_bytes"] = _sbuf.getvalue()
-                st.image(sig_upload, caption="Signature preview", width=300)
-                st.success("Signature uploaded")
-            elif not st.session_state.get("_sig_bytes"):
-                st.session_state.pop("_sig_bytes", None)
-
-        else:  # Draw on screen
-            if not CANVAS_OK:
-                st.warning("Drawing pad unavailable. Please use Upload photo instead.")
-            else:
-                with st.container(border=True):
-                    st.caption("Draw with mouse, finger or stylus. Toolbar (top-right of box) to undo/clear.")
-                    try:
-                        canvas_result = st_canvas(
-                            fill_color="rgba(0,0,0,0)",
-                            stroke_width=3,
-                            stroke_color="#000000",
-                            background_color="#EAF4FB",
-                            update_streamlit=True,
-                            return_image_data=True,
-                            height=180,
-                            width=510,
-                            drawing_mode="freedraw",
-                            display_toolbar=True,
-                            key="sig_canvas",
-                        )
-                    except TypeError:
-                        canvas_result = st_canvas(
-                            fill_color="rgba(0,0,0,0)",
-                            stroke_width=3,
-                            stroke_color="#000000",
-                            background_color="#EAF4FB",
-                            update_streamlit=True,
-                            return_image_data=True,
-                            height=180,
-                            width=510,
-                            drawing_mode="freedraw",
-                            key="sig_canvas",
-                        )
-                # Explicit save button - more reliable than auto-detect
-                _btn_col, _clr_col = st.columns(2)
-                with _btn_col:
-                    if st.button("✅ Save Signature", use_container_width=True,
-                                 type="primary", key="btn_save_sig"):
-                        try:
-                            _img_data = canvas_result.image_data if canvas_result else None
-                            if _img_data is not None:
-                                from PIL import Image as _PILImage
-                                # Save as RGBA PNG - fpdf2 temp file handles transparency
-                                sig_pil = _PILImage.fromarray(
-                                    _img_data.astype("uint8"), "RGBA"
-                                )
-                                # Flatten onto white
-                                _white = _PILImage.new("RGBA", sig_pil.size, (255,255,255,255))
-                                _white.paste(sig_pil, mask=sig_pil.split()[3])
-                                sig_pil_rgb = _white.convert("RGB")
-                                # Turn the pad's pale-blue background pure white so the signature sits naturally on the paperwork
-                                _arr = np.array(sig_pil_rgb).astype("int16")
-                                _bgd = np.abs(_arr - np.array([234, 244, 251])).max(axis=2)
-                                _arr[_bgd < 40] = 255
-                                sig_pil_rgb = _PILImage.fromarray(_arr.astype("uint8"), "RGB")
-                                sig_buf = io.BytesIO()
-                                sig_pil_rgb.save(sig_buf, format="PNG")
-                                st.session_state["_sig_bytes"] = sig_buf.getvalue()
-                                st.rerun()
-                            else:
-                                st.warning("Canvas returned no data - please try Upload photo.")
-                        except Exception as _ce:
-                            st.warning(f"Canvas capture failed ({type(_ce).__name__}: {_ce}). Use Upload photo.")
-                with _clr_col:
-                    if st.button("🗑️ Clear", use_container_width=True, key="btn_clr_sig"):
-                        st.session_state.pop("_sig_bytes", None)
-                        st.rerun()
-
-        sig_bytes = st.session_state.get("_sig_bytes")
-        if sig_bytes:
-            # Show preview so consultant can confirm it captured correctly
-            st.success("✅ Signature saved")
+    def _record_ui(pdf_bytes, kind, primary, label, btn_key, stub, plain_name):
+        """📝 Record the deal in Zoho and download the PDF with its Zoho reference in the file name
+        (the signed copy files itself in Zoho once Zoho Sign says it's complete)."""
+        if pdf_bytes is None:
+            return
+        if not _zs_ok:
+            st.download_button(f"📥 Download the {label}", data=pdf_bytes, file_name=plain_name, mime="application/pdf",
+                               use_container_width=True, type="primary", key=btn_key + "_plain")
+            return
+        if st.button(f"📝 Record in Zoho & download the {label}", key=btn_key + "_rec", type="primary", use_container_width=True):
             try:
-                st.image(sig_bytes, width=200, caption="Signature preview")
-            except Exception:
-                pass
-        else:
-            st.caption("✏️ Draw signature above then click Save Signature")
+                with st.spinner("Recording the deal in Zoho..."):
+                    _did, _fn = zoho_record_for_manual(pdf_bytes, _pack_prefix if kind == "pack" else "SYComms", stub,
+                                                       kind, primary, label)
+                st.session_state[btn_key + "_manual"] = {"deal": _did, "name": _fn, "bytes": pdf_bytes}
+            except Exception as _e:
+                st.error(str(_e))
+        _man = st.session_state.get(btn_key + "_manual")
+        if _man:
+            st.success(f"Recorded on Zoho deal {_man['deal']}.")
+            st.download_button(f"📥 Download {_man['name']}", data=_man["bytes"], file_name=_man["name"],
+                               mime="application/pdf", use_container_width=True, key=btn_key + "_mdl")
+            st.caption("Upload this file in Zoho Sign as it is - don't rename it. The signature boxes place themselves. "
+                       "If you change the quote after this, press 📝 again for a fresh copy.")
 
-        sig_bytes = st.session_state.get("_sig_bytes")
-        if sig_bytes:
-            st.success("✅ Signature saved - ready to download")
-        else:
-            st.caption("✏️ Draw signature above then click Save Signature")
-
-        # Confirm name typed
-        sig_name = st.text_input("Customer full name and position (typed confirmation)",
-                                 value=contact_name or "", key="sig_name_confirm",
-                                 placeholder="e.g. Jane Smith - Director")
-    with send_col:
-        st.markdown("### 📥 Download & Send")
-        sig_bytes = st.session_state.get("_sig_bytes")
-        safe = (comp_name or "quote").replace(" ","_")
-        from datetime import datetime as _dtnow
-        _ts = _dtnow.now().strftime("%d/%m/%Y  %H:%M")
-
-        _two = n_packs() >= 2
-
-        # ── Send through Zoho: the deal is recorded in Zoho and the envelope carries its reference, so the
-        #    signed paperwork files itself (account, Legal Contract, onboarding tickets) when it comes back.
-        _zs_ok = _zoho_configured()
-        with st.container(border=True):
-            st.markdown("#### ⚡ Send through Zoho (automatic)")
-            if not _zs_ok:
-                st.caption("Zoho isn't connected yet - an admin sets it up in the Admin panel. You can still use the manual Zoho Sign links below.")
-            else:
-                _zl_t, _zl_n = st.session_state.get("q_zl_type"), st.session_state.get("q_zl_name")
-                _zl_deal = st.session_state.get("q_zl_deal")
-                if _zl_deal:
-                    st.caption(f"Linked to Zoho deal {_zl_deal}" + (f" ({_zl_n})" if _zl_n else "") + " - it is updated each time you send.")
-                elif _zl_t:
-                    st.caption(f"Linked to the Zoho {_zl_t.lower()} '{_zl_n}'. A deal is created "
-                               + ("on that account" if _zl_t == "Account" else "for this lead (converted to an account once signed)")
-                               + " when you first send.")
-                else:
-                    st.caption("Not linked to anything in Zoho - a new deal is created when you send, and the account is opened once the "
-                               "paperwork is signed. If the customer is already in Zoho, use 'Pull customer from Zoho' in the left panel first.")
-                if _zl_t or _zl_deal:
-                    if st.button("Unlink from Zoho", key="zs_unlink"):
-                        for _k in ("q_zl_type", "q_zl_id", "q_zl_name", "q_zl_acct", "q_zl_deal", "q_zs_cis", "q_zs_pack"):
-                            st.session_state[_k] = ""
-                        st.rerun()
-                if not st.session_state.get("zs_signer_name"):
-                    st.session_state["zs_signer_name"] = (contact_name or "").partition(" - ")[0].strip()
-                if not st.session_state.get("zs_signer_email"):
-                    st.session_state["zs_signer_email"] = (director_email or "").strip()
-                _zs1, _zs2 = st.columns(2)
-                with _zs1:
-                    st.text_input("Signer's name", key="zs_signer_name")
-                with _zs2:
-                    st.text_input("Signer's email", key="zs_signer_email")
-                st.caption("At steps 2 and 5, press 📝 Record in Zoho & download for Zoho Sign, then upload that file in Zoho Sign "
-                           "without renaming it. When the customer signs, Zoho opens the account, files the signed documents under "
-                           "Legal Contracts and raises the onboarding tickets. (⚡ sends from the app but needs Zoho Sign API credits.)")
-
-        def _zs_send_ui(pdf_bytes, file_name, kind, primary, label, req_key, btn_key, prefix="SYComms", stub=""):
-            """📝 Record in Zoho & download for Zoho Sign (the normal route: the consultant uploads the file in Zoho Sign),
-            and the ⚡ button that sends it through the Zoho Sign API (needs Zoho Sign API credits)."""
-            if not _zs_ok:
-                return
-            _rid = st.session_state.get(req_key)
-            _show_send = True
-            if _rid:   # sent with ⚡ - progress can be checked through the API
-                _c1, _c2 = st.columns([3, 2])
-                with _c1:
-                    st.caption(f"⚡ Sent through Zoho Sign (request {_rid}).")
-                with _c2:
-                    if st.button("🔄 Has it been signed?", key=btn_key + "_chk", use_container_width=True):
-                        try:
-                            _stt = sign_status(_rid)
-                            st.session_state[btn_key + "_stt"] = _stt
-                            if _stt == "completed" and kind == "cis":
-                                st.session_state["cis_done"] = True
-                                st.rerun()
-                        except Exception as _e:
-                            st.session_state[btn_key + "_stt"] = f"couldn't check ({_e})"
-                _stt = st.session_state.get(btn_key + "_stt")
-                if _stt:
-                    (st.success if _stt == "completed" else st.info)(
-                        "Signed and returned." if _stt == "completed" else f"Zoho Sign status: {_stt}")
-                _show_send = st.checkbox("Send it again", key=f"{btn_key}_again_{st.session_state.get(btn_key + '_n', 0)}")
-            if pdf_bytes is None or not _show_send:
-                return
-            _b1, _b2 = st.columns(2)
-            with _b1:
-                _rec = st.button("📝 Record in Zoho & download for Zoho Sign", key=btn_key + "_rec", type="primary",
-                                 use_container_width=True)
-            with _b2:
-                _api = st.button(f"⚡ Send the {label} through Zoho Sign for me", key=btn_key, use_container_width=True,
-                                 help="Sends straight from the app. Needs Zoho Sign API credits.")
-            if _rec:
-                try:
-                    with st.spinner("Recording the deal in Zoho..."):
-                        _did, _fn = zoho_record_for_manual(pdf_bytes, prefix, stub or safe, kind, primary, label)
-                    st.session_state[btn_key + "_manual"] = {"deal": _did, "name": _fn, "bytes": pdf_bytes}
-                except Exception as _e:
-                    st.error(str(_e))
-            _man = st.session_state.get(btn_key + "_manual")
-            if _man:
-                st.success(f"Recorded on Zoho deal {_man['deal']}.")
-                st.download_button(f"📥 Download {_man['name']}", data=_man["bytes"], file_name=_man["name"],
-                                   mime="application/pdf", use_container_width=True, key=btn_key + "_mdl")
-                st.caption("Upload this file in Zoho Sign as it is - don't rename it. The signature box places itself."
-                           + (" When the customer has signed, tick 'Step 2 complete' below." if kind == "cis" else ""))
-            if _api:
-                try:
-                    with st.spinner("Recording the deal in Zoho and sending..."):
-                        _did, _rid = zoho_send_for_signature(pdf_bytes, file_name, kind, primary, label)
-                    st.session_state[req_key] = _rid
-                    st.session_state.pop(btn_key + "_stt", None)
-                    st.session_state[btn_key + "_n"] = st.session_state.get(btn_key + "_n", 0) + 1   # fresh 'Send it again' box
-                    st.success(f"Sent to {st.session_state.get('zs_signer_email')} - Zoho deal {_did} updated.")
-                except Exception as _e:
-                    if zs_is_licence_error(_e):
-                        st.warning("Sending straight from the app needs Zoho Sign API credits, which aren't on our plan. "
-                                   "Use 📝 Record in Zoho & download for Zoho Sign instead, then upload that file in Zoho Sign. "
-                                   "It still files itself in Zoho once it's signed.")
-                    else:
-                        st.error(str(_e))
-
-        st.markdown("### 🧭 Signing steps")
-        _unsigned_bytes = build_pdf(sig_bytes=None, curr_total=current_total, curr_bb=current_bb,
-                                    curr_system=current_system, curr_calls=current_calls, curr_mobile=current_mobile)
-
-        # ── Steps 1-2: the initial document, signed in Zoho Sign ────────────────
-        if _tele_any:
-            st.markdown("#### Step 1 - Download the unsigned agreement to proceed")
-            st.caption("The Contract Information Sheet: the contract term and costings with a single signature box ('Acceptance of contract terms'), for Zoho Sign.")
-            _cis_blank = build_proposal_pdf(sign={"sig_bytes": None, "name": sig_name or "", "company": comp_name or "", "timestamp": ""}, cis=True)
-            st.download_button("📥 Download unsigned Contract Information Sheet", data=_cis_blank,
-                               file_name=f"SYComms_{safe}_ContractInfoSheet_{date.today()}.pdf",
-                               mime="application/pdf", use_container_width=True, key="dl_cis_blank")
-            with st.expander("Or sign this first document here instead"):
-                if sig_bytes and sig_name:
-                    st.download_button("✅ Contract Information Sheet - signed now",
-                                       data=build_proposal_pdf(sign={"sig_bytes": sig_bytes, "name": sig_name, "company": comp_name or "", "timestamp": _ts}, cis=True),
-                                       file_name=f"SYComms_{safe}_ContractInfoSheet_SIGNED_{date.today()}.pdf",
-                                       mime="application/pdf", use_container_width=True, type="primary", key="dl_cis_signed")
-                else:
-                    st.caption("Add the signature and name (step 3) to sign it here.")
-            st.markdown("#### Step 2 - Send it via Zoho Sign")
-            _zs_send_ui(_cis_blank, f"SYComms_{safe}_ContractInfoSheet_{date.today()}.pdf", "cis", False,
-                        "Contract Information Sheet", "q_zs_cis", "zs_btn_cis", prefix="SYComms", stub=f"{safe}_ContractInfoSheet")
-            st.link_button("Open Zoho Sign - send the Contract Information Sheet →", "https://sign.zoho.eu")
-            _cis_done = st.checkbox("Step 2 complete - the customer has signed it and it has been returned", key="cis_done")
-        else:
-            _cis_done = True
-            st.info("There is no telephony on this deal, so the Contract Information Sheet (steps 1 and 2) isn't needed - start at step 3.")
-
-        # ── Step 3: capture ────────────────────────────────────────────────────
-        st.markdown("#### Step 3 - Capture the customer's signature, name and position")
-        st.caption("On the left: draw or upload the signature, press Save Signature, then type their full name and position.")
-        st.markdown(("✅" if sig_bytes else "⬜") + " Signature saved  \n" + ("✅" if sig_name else "⬜") + " Name and position typed")
-
-        # ── Step 4: signed pack ───────────────────────────────────────────────
-        st.markdown("#### Step 4 - Download the " + ("combined " if _two else "") + "signed pack")
-        st.caption("The signature, name and date are filled in everywhere they belong - apart from the single 'Agreement to proceed' box on the proposal, "
-                   "which is left blank for Zoho Sign.")
-        if cs_crm_missing:
-            st.warning("Call Scope is held back from the pack until the customer's CRM is entered in the Call Scope card.")
-        _signed_bytes = None
-        _zs_pack_bytes = None      # what the ⚡ button at step 5 sends
-        _sgx = {"sig_bytes": sig_bytes, "name": sig_name, "company": comp_name or "", "ts": _ts, "ip": _client_ip}
-        if sig_bytes and sig_name and _cis_done:
-            if _tele_any:
-                _signed_bytes = build_pdf(sig_bytes=sig_bytes, sig_name=sig_name, sig_company=comp_name or "", sig_timestamp=_ts, sig_ip=_client_ip,
-                                          curr_total=current_total, curr_bb=current_bb, curr_system=current_system,
-                                          curr_calls=current_calls, curr_mobile=current_mobile)
-            try:
-                _main = build_combined(_signed_bytes, _sgx) if (_two or not _tele_any) else _signed_bytes
-                st.session_state["_signed_pdf_bytes"]    = _main
-                if _tele_any:
-                    _zs_pack_bytes = _main
-                st.session_state["_signed_pdf_filename"] = f"{'Combined_Pack' if _two else 'SYComms'}_{safe}_SIGNED_{date.today()}.pdf"
-                st.download_button("✅ Download the " + ("COMBINED " if _two else "") + "signed pack", data=_main,
-                                   file_name=st.session_state["_signed_pdf_filename"], mime="application/pdf",
-                                   use_container_width=True, type="primary", key="dl_signed")
-            except Exception as _cse:
-                st.error(f"Couldn't build the signed pack: {_cse}")
-        else:
-            _why = []
-            if _tele_any and not _cis_done: _why.append("tick 'Step 2 complete' above")
-            if not sig_bytes: _why.append("save the signature")
-            if not sig_name: _why.append("type the customer name and position")
-            st.button("✅ Download the " + ("COMBINED " if _two else "") + "signed pack", disabled=True, use_container_width=True, key="dl_signed_dis")
-            st.caption("To unlock it: " + ", ".join(_why) + ".")
-
-        # ── Step 5 ────────────────────────────────────────────────────────────
-        st.markdown("#### Step 5 - Send it via Zoho Sign")
-        st.caption("Upload the signed pack. The customer signs the one 'Agreement to proceed' box that was left blank.")
-        if not _tele_any and not cs_crm_missing and (cs_active or ac_active):
-            # no telephony: the Call Scope / SteadyTemp packs go out unsigned, to be signed in Zoho Sign
-            try:
-                _zs_pack_bytes = build_combined(None)
-            except Exception:
-                _zs_pack_bytes = None
-        _zs_send_ui(_zs_pack_bytes, f"{'Combined_Pack' if _two else 'SYComms'}_{safe}_{date.today()}.pdf", "pack", True,
-                    "agreement pack", "q_zs_pack", "zs_btn_pack", prefix=("Combined_Pack" if _two else "SYComms"), stub=safe)
-        if _zs_ok and _zs_pack_bytes is None and not st.session_state.get("q_zs_pack"):
-            st.caption("📝 Recording in Zoho unlocks once the signed pack is ready at step 4.")
-        st.link_button("Open Zoho Sign - send the signed pack →", "https://sign.zoho.eu")
-
-        # ── Step 6 ────────────────────────────────────────────────────────────
-        st.markdown("#### Step 6 - Save the " + ("combined " if _two else "") + "document pack")
-        st.caption("When Zoho Sign returns the completed document, save it together with this quote file, so the deal can be reopened later "
-                   "(Load previous quote) - for example to correct the branding and re-issue the paperwork.")
+    def _save_quote_ui(key):
         st.download_button("💾 Save the quote file (.json)", data=json.dumps(quote_snapshot(), indent=2, default=str),
                            file_name=f"SYComms_{safe}_QUOTE_{date.today()}.json", mime="application/json",
-                           use_container_width=True, key="dl_signed_quote")
+                           use_container_width=True, key=key)
+        st.caption("Keep it with the deal, so it can be reopened later (Load previous quote) to correct or re-issue the paperwork.")
 
-        st.divider()
-        st.markdown("### 🗂️ Individual packs and other documents")
-        st.caption("If you only need one pack, or want to preview a blank one, use these.")
-        if _tele_any:
-            st.markdown("**Telephony pack**")
-            st.download_button("📥 Download Full Pack (Unsigned)", data=_unsigned_bytes, file_name=f"SYComms_{safe}_{date.today()}.pdf",
-                               mime="application/pdf", use_container_width=True, key="dl_unsigned")
-            if _signed_bytes:
-                st.download_button("✅ Download Signed Telephony Pack", data=_signed_bytes, file_name=f"SYComms_{safe}_SIGNED_{date.today()}.pdf",
-                                   mime="application/pdf", use_container_width=True, key="dl_signed_tele")
-        if _two and not cs_crm_missing:
-            st.markdown("**Combined pack - blank signature boxes**")
-            try:
-                st.download_button("📦 Combined pack - blank (for review or Zoho Sign)", data=build_combined(_unsigned_bytes),
-                                   file_name=f"Combined_Pack_{safe}_{date.today()}.pdf", mime="application/pdf",
-                                   use_container_width=True, key="dl_comb_blank")
-            except Exception as _cse:
-                st.error(f"Couldn't build the combined pack: {_cse}")
+    sig_bytes, sig_name = None, contact_name or ""
 
-        if cs_active:
-            st.divider()
-            st.markdown("#### Call Scope pack (separate agreement)")
-            st.caption("Its own Agreement to proceed, order, price schedule, Terms & Conditions and Direct Debit mandate - signed separately from the telephony pack.")
-            if cs_crm_missing:
-                st.warning("Enter the customer's CRM in the Call Scope card (AI CRM Integration) to produce this pack.")
-            else:
-                try:
-                    st.download_button("📥 Call Scope pack - blank signature (for Zoho Sign)", data=build_callscope_pack(),
-                                       file_name=f"CallScope_{safe}_{date.today()}.pdf", mime="application/pdf",
-                                       use_container_width=True, key="dl_cs_blank")
-                    if sig_bytes and sig_name:
-                        st.download_button("✅ Call Scope pack - signed now",
-                                           data=build_callscope_pack({"sig": sig_bytes, "name": sig_name, "date": date.today().strftime("%d/%m/%Y")}),
-                                           file_name=f"CallScope_{safe}_SIGNED_{date.today()}.pdf", mime="application/pdf",
-                                           use_container_width=True, type="primary", key="dl_cs_signed")
-                    else:
-                        st.caption("To sign it here instead, add the signature and name on the left.")
-                except Exception as _cse:
-                    st.error(f"Couldn't build the Call Scope pack: {_cse}")
+    if _inperson:
+        # ═══ IN PERSON: signed in the app, one 'Agreement to proceed' box left for Zoho Sign ═══
+        sign_col, send_col = st.columns([3, 2])
 
-        if ac_active:
-            st.divider()
-            st.markdown("#### ❄️ SteadyTemp pack (separate agreement)")
-            st.caption("Its own Proposal, Order Form, On-Site Support Agreement, Direct Debit set-up and Terms & Conditions under SteadyTemp LTD - signed separately from the telephony pack.")
-            try:
-                st.download_button("📥 SteadyTemp pack - blank signature (for Zoho Sign)", data=build_steadytemp_pack(),
-                                   file_name=f"SteadyTemp_{safe}_{date.today()}.pdf", mime="application/pdf",
-                                   use_container_width=True, key="dl_st_blank")
-                if sig_bytes and sig_name:
-                    st.download_button("✅ SteadyTemp pack - signed now",
-                                       data=build_steadytemp_pack({"sig_bytes": sig_bytes, "name": sig_name, "company": comp_name or "", "ts": _ts, "ip": _client_ip}),
-                                       file_name=f"SteadyTemp_{safe}_SIGNED_{date.today()}.pdf", mime="application/pdf",
-                                       use_container_width=True, type="primary", key="dl_st_signed")
+        with sign_col:
+            st.markdown("### Customer Signature")
+            st.caption("Ask the customer to sign below, or photograph their signature.")
+
+            # Two options: draw on screen OR upload photo
+            sig_method = st.radio(
+                "Capture method:",
+                ["Draw on screen", "Upload photo of signature"],
+                horizontal=True, key="sig_method_radio"
+            )
+
+            if sig_method == "Upload photo of signature":
+                st.caption("Take a photo of the customer's handwritten signature or upload an image file.")
+                sig_upload = st.file_uploader(
+                    "Signature image (JPG or PNG)", type=["jpg","jpeg","png"],
+                    key="sig_photo_upload", label_visibility="collapsed"
+                )
+                if sig_upload:
+                    from PIL import Image as _PILImage
+                    _simg = _PILImage.open(sig_upload).convert("RGB")
+                    # Resize to standard signature dimensions
+                    _simg = _simg.resize((400, 120), _PILImage.LANCZOS)
+                    _sbuf = io.BytesIO()
+                    _simg.save(_sbuf, format="PNG")
+                    st.session_state["_sig_bytes"] = _sbuf.getvalue()
+                    st.image(sig_upload, caption="Signature preview", width=300)
+                    st.success("Signature uploaded")
+                elif not st.session_state.get("_sig_bytes"):
+                    st.session_state.pop("_sig_bytes", None)
+
+            else:  # Draw on screen
+                if not CANVAS_OK:
+                    st.warning("Drawing pad unavailable. Please use Upload photo instead.")
                 else:
-                    st.caption("To sign it here instead, add the signature and name on the left.")
-            except Exception as _ste:
-                st.error(f"Couldn't build the SteadyTemp pack: {_ste}")
-            if not ac_quote["is_cash"]:
-                st.markdown("**Shire Leasing hire agreement (the finance company's form for the air conditioning)**")
-                st.caption("Filled in from the customer details above and signed with the same signature.")
+                    with st.container(border=True):
+                        st.caption("Draw with mouse, finger or stylus. Toolbar (top-right of box) to undo/clear.")
+                        try:
+                            canvas_result = st_canvas(
+                                fill_color="rgba(0,0,0,0)",
+                                stroke_width=3,
+                                stroke_color="#000000",
+                                background_color="#EAF4FB",
+                                update_streamlit=True,
+                                return_image_data=True,
+                                height=180,
+                                width=510,
+                                drawing_mode="freedraw",
+                                display_toolbar=True,
+                                key="sig_canvas",
+                            )
+                        except TypeError:
+                            canvas_result = st_canvas(
+                                fill_color="rgba(0,0,0,0)",
+                                stroke_width=3,
+                                stroke_color="#000000",
+                                background_color="#EAF4FB",
+                                update_streamlit=True,
+                                return_image_data=True,
+                                height=180,
+                                width=510,
+                                drawing_mode="freedraw",
+                                key="sig_canvas",
+                            )
+                    # Explicit save button - more reliable than auto-detect
+                    _btn_col, _clr_col = st.columns(2)
+                    with _btn_col:
+                        if st.button("✅ Save Signature", use_container_width=True,
+                                     type="primary", key="btn_save_sig"):
+                            try:
+                                _img_data = canvas_result.image_data if canvas_result else None
+                                if _img_data is not None:
+                                    from PIL import Image as _PILImage
+                                    # Save as RGBA PNG - fpdf2 temp file handles transparency
+                                    sig_pil = _PILImage.fromarray(
+                                        _img_data.astype("uint8"), "RGBA"
+                                    )
+                                    # Flatten onto white
+                                    _white = _PILImage.new("RGBA", sig_pil.size, (255,255,255,255))
+                                    _white.paste(sig_pil, mask=sig_pil.split()[3])
+                                    sig_pil_rgb = _white.convert("RGB")
+                                    # Turn the pad's pale-blue background pure white so the signature sits naturally on the paperwork
+                                    _arr = np.array(sig_pil_rgb).astype("int16")
+                                    _bgd = np.abs(_arr - np.array([234, 244, 251])).max(axis=2)
+                                    _arr[_bgd < 40] = 255
+                                    sig_pil_rgb = _PILImage.fromarray(_arr.astype("uint8"), "RGB")
+                                    sig_buf = io.BytesIO()
+                                    sig_pil_rgb.save(sig_buf, format="PNG")
+                                    st.session_state["_sig_bytes"] = sig_buf.getvalue()
+                                    st.rerun()
+                                else:
+                                    st.warning("Canvas returned no data - please try Upload photo.")
+                            except Exception as _ce:
+                                st.warning(f"Canvas capture failed ({type(_ce).__name__}: {_ce}). Use Upload photo.")
+                    with _clr_col:
+                        if st.button("🗑️ Clear", use_container_width=True, key="btn_clr_sig"):
+                            st.session_state.pop("_sig_bytes", None)
+                            st.rerun()
+
+            sig_bytes = st.session_state.get("_sig_bytes")
+            if sig_bytes:
+                # Show preview so consultant can confirm it captured correctly
+                st.success("✅ Signature saved")
+                try:
+                    st.image(sig_bytes, width=200, caption="Signature preview")
+                except Exception:
+                    pass
+            else:
+                st.caption("✏️ Draw signature above then click Save Signature")
+
+
+            # Confirm name typed
+            sig_name = st.text_input("Customer full name and position (typed confirmation)",
+                                     value=contact_name or "", key="sig_name_confirm",
+                                     placeholder="e.g. Jane Smith - Director")
+        with send_col:
+            sig_bytes = st.session_state.get("_sig_bytes")
+            st.markdown("### 🧭 Three steps")
+            st.markdown("#### Step 1 - Capture the signature")
+            st.caption("On the left: draw or upload the customer's signature, press Save Signature, and check their name and position.")
+            st.markdown(("✅" if sig_bytes else "⬜") + " Signature saved  \n" + ("✅" if sig_name else "⬜") + " Name and position typed")
+
+            st.markdown("#### Step 2 - Record in Zoho & download the signed pack")
+            st.caption("Signed and dated everywhere with the customer's signature, apart from one 'Agreement to proceed' box that is "
+                       "signed in Zoho Sign." + (" The signed Contract Information Sheet is at the front." if _tele_any else ""))
+            if cs_crm_missing:
+                st.warning("Call Scope is held back from the pack until the customer's CRM is entered in the Call Scope card.")
+            _ip_pack = None
+            if sig_bytes and sig_name:
+                _sgx = {"sig_bytes": sig_bytes, "name": sig_name, "company": comp_name or "", "ts": _ts, "ip": _client_ip}
+                try:
+                    if _tele_any:
+                        _signed_bytes = build_pdf(sig_bytes=sig_bytes, sig_name=sig_name, sig_company=comp_name or "",
+                                                  sig_timestamp=_ts, sig_ip=_client_ip, curr_total=current_total, curr_bb=current_bb,
+                                                  curr_system=current_system, curr_calls=current_calls, curr_mobile=current_mobile)
+                        _cis_signed = build_proposal_pdf(sign={"sig_bytes": sig_bytes, "name": sig_name, "company": comp_name or "",
+                                                               "timestamp": _ts}, cis=True)
+                        _main = build_combined(_signed_bytes, _sgx) if _two else _signed_bytes
+                        _ip_pack = merge_pdfs(_cis_signed, _main)
+                    elif cs_active and not cs_crm_missing:
+                        # no telephony: the Call Scope 'Agreement to proceed' on the front page is the box left for Zoho Sign
+                        _ip_pack = build_combined(None, dict(_sgx, cover_blank=True))
+                    elif ac_active:
+                        _ip_pack = build_combined(None)
+                        st.caption("SteadyTemp-only deal: the SteadyTemp pack goes to Zoho Sign unsigned, and the customer signs "
+                                   "each box there (they can sign on your device).")
+                except Exception as _cse:
+                    st.error(f"Couldn't build the signed pack: {_cse}")
+            else:
+                _why = []
+                if not sig_bytes: _why.append("save the signature")
+                if not sig_name: _why.append("type the customer's name and position")
+                st.button("📝 Record in Zoho & download the signed pack", disabled=True, use_container_width=True, key="zs_ip_dis")
+                st.caption("To unlock it: " + " and ".join(_why) + ".")
+            _record_ui(_ip_pack, "pack", True, "signed pack", "zs_ip_pack", safe,
+                       f"{_pack_prefix}_{safe}_SIGNED_{date.today()}.pdf")
+
+            st.markdown("#### Step 3 - Send it in Zoho Sign")
+            st.caption("Upload the file in Zoho Sign with the customer as the signer and send it - they can sign the last box on your "
+                       "device there and then. When they do, Zoho opens the account, files the paperwork under Legal Contracts and "
+                       "raises the onboarding tickets.")
+            st.link_button("Open Zoho Sign →", "https://sign.zoho.eu", use_container_width=True)
+            _save_quote_ui("dl_quote_ip")
+    else:
+        # ═══ REMOTE: everything signed in Zoho Sign - every signature box, initials box and date is tagged ═══
+        _rc, _ = st.columns([3, 2])
+        with _rc:
+            st.markdown("### 🧭 Three steps")
+            _cis_ok = True
+            if _tele_any:
+                st.markdown("#### Step 1 - Record in Zoho & download the Contract Information Sheet")
+                st.caption("The contract term and costings, for the customer to accept first. Upload it in Zoho Sign and send it to them.")
+                _cis_blank = build_proposal_pdf(sign={"sig_bytes": None, "name": contact_name or "", "company": comp_name or "",
+                                                      "timestamp": ""}, cis=True)
+                _record_ui(_cis_blank, "cis", False, "Contract Information Sheet", "zs_rm_cis", f"{safe}_ContractInfoSheet",
+                           f"SYComms_{safe}_ContractInfoSheet_{date.today()}.pdf")
+                _cis_ok = st.checkbox("The customer has signed the Contract Information Sheet", key="cis_done")
+            else:
+                st.markdown("#### Step 1 - Nothing to do")
+                st.caption("There is no telephony on this deal, so there's no Contract Information Sheet - go straight to step 2.")
+
+            st.markdown("#### Step 2 - Record in Zoho & download the full pack")
+            st.caption("Every signature box, initials box and date is tagged, so Zoho Sign places the fields itself - nothing to drag on.")
+            if cs_crm_missing:
+                st.warning("Call Scope is held back from the pack until the customer's CRM is entered in the Call Scope card.")
+            if _cis_ok:
+                try:
+                    _rm_tele = build_pdf(sig_bytes=None, curr_total=current_total, curr_bb=current_bb, curr_system=current_system,
+                                         curr_calls=current_calls, curr_mobile=current_mobile) if _tele_any else None
+                    _rm_pack = build_combined(_rm_tele) if (_two or not _tele_any) else _rm_tele
+                except Exception as _cse:
+                    _rm_pack = None
+                    st.error(f"Couldn't build the pack: {_cse}")
+                _record_ui(_rm_pack, "pack", True, "full pack", "zs_rm_pack", safe, f"{_pack_prefix}_{safe}_{date.today()}.pdf")
+            else:
+                st.button("📝 Record in Zoho & download the full pack", disabled=True, use_container_width=True, key="zs_rm_dis")
+                st.caption("Unlocks once the customer has signed the Contract Information Sheet (tick the box above).")
+
+            st.markdown("#### Step 3 - Send it in Zoho Sign")
+            st.caption("Upload the file in Zoho Sign with the customer as the signer and send it. When they sign, Zoho opens the "
+                       "account, files the paperwork under Legal Contracts and raises the onboarding tickets.")
+            st.link_button("Open Zoho Sign →", "https://sign.zoho.eu", use_container_width=True)
+            _save_quote_ui("dl_quote_rm")
+
+    # ── Anything else that's signed separately ──────────────────────────────────
+    _loa_on = _loa_data()["on"] and _loa_data()["numbers"]
+    _shire_on = ac_active and not ac_quote["is_cash"]
+    if _loa_on or _shire_on:
+        st.divider()
+        with st.expander("🗂️ Other documents (only if you need them)"):
+            if _shire_on:
+                st.markdown("**Shire Leasing hire agreement** - the finance company's own form for the air conditioning, signed separately.")
                 _bk_miss = [n for n, v in (("bank name", bank_name), ("account number", acc_no), ("sort code", sort_code)) if not v]
                 if _bk_miss:
                     st.caption("Direct Debit details still missing in the left-hand bar (" + ", ".join(_bk_miss) + ") - those boxes stay blank on the form.")
                 try:
-                    st.download_button("📥 Shire agreement - blank signature (for Zoho Sign)", data=ac_build_shire(None),
-                                       file_name=f"SteadyTemp_{safe}_Shire_Agreement_{date.today()}.pdf", mime="application/pdf",
-                                       use_container_width=True, key="dl_shire_blank")
-                    if sig_bytes and sig_name:
-                        st.download_button("✅ Shire agreement - signed now",
-                                           data=ac_build_shire({"bytes": sig_bytes, "name": sig_name, "company": comp_name or "", "ts": _ts}),
+                    if _inperson and sig_bytes and sig_name:
+                        st.download_button("✅ Shire agreement - signed", data=ac_build_shire({"bytes": sig_bytes, "name": sig_name, "company": comp_name or "", "ts": _ts}),
                                            file_name=f"SteadyTemp_{safe}_Shire_Agreement_SIGNED_{date.today()}.pdf", mime="application/pdf",
-                                           use_container_width=True, type="primary", key="dl_shire_signed")
+                                           use_container_width=True, key="dl_shire_signed")
+                    else:
+                        st.download_button("📥 Shire agreement - for Zoho Sign", data=ac_build_shire(None),
+                                           file_name=f"SteadyTemp_{safe}_Shire_Agreement_{date.today()}.pdf", mime="application/pdf",
+                                           use_container_width=True, key="dl_shire_blank")
+                        st.caption("This form has no automatic signature boxes - add them in Zoho Sign.")
                 except Exception as _e:
                     st.error(f"Couldn't build the Shire agreement: {_e}")
+            if _loa_on:
+                st.markdown("**Letter of Authority** - on its own, with no pricing, for the customer's current provider. "
+                            "(It is already inside the pack.)")
+                _loa_signed = bool(_inperson and sig_bytes and sig_name)
+                _loa_bytes = build_loa_pdf(sig_bytes=sig_bytes if _loa_signed else None, sig_ts=_ts if _loa_signed else "")
+                if _loa_bytes:
+                    st.download_button("📞 Download Letter of Authority" + (" (signed)" if _loa_signed else ""), data=_loa_bytes,
+                                       file_name=f"LetterOfAuthority_{safe}_{'SIGNED_' if _loa_signed else ''}{date.today()}.pdf",
+                                       mime="application/pdf", use_container_width=True, key="dl_loa_sign")
 
-        if _loa_data()["on"] and _loa_data()["numbers"]:
-            st.divider()
-            st.markdown("**Letter of Authority (for the old provider)**")
-            st.caption("On its own, with no pricing - ready to send to the customer's current provider.")
-            _loa_signed = bool(sig_bytes and sig_name and _cis_done)
-            _loa_bytes = build_loa_pdf(sig_bytes=sig_bytes if _loa_signed else None, sig_ts=_ts if _loa_signed else "")
-            if _loa_bytes:
-                st.download_button(
-                    "📞 Download Letter of Authority" + (" (signed)" if _loa_signed else " (unsigned)"),
-                    data=_loa_bytes,
-                    file_name=f"LetterOfAuthority_{safe}_{'SIGNED_' if _loa_signed else ''}{date.today()}.pdf",
-                    mime="application/pdf", use_container_width=True, key="dl_loa_sign")
-
-        st.divider()
-
-
-    st.divider()
-    st.markdown("### ✍️ Send via Zoho Sign")
-    st.caption("Follow the six signing steps above. The Contract Information Sheet goes to Zoho Sign first; once it is signed, the signed pack "
-               "(combined, if Call Scope or air conditioning is on the deal) goes with its single 'Agreement to proceed' box left blank.")
-    st.link_button("Open Zoho Sign →", "https://sign.zoho.eu", use_container_width=False)
 
 if _show_admin:
     with tab7:
