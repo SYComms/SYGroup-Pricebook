@@ -1670,7 +1670,7 @@ def _sign_call(method, path, data=None, files=None, raw=False):
 
 def zs_marker(deal_id, kind, primary):
     """The reference the CRM function reads to find the deal. Kept in the envelope's description."""
-    return f"Pricebook ref SYC;deal={deal_id};kind={kind};primary={1 if primary else 0};end"
+    return f"Pricebook ref SYC deal {deal_id} kind {kind} primary {1 if primary else 0} end"
 
 def sign_send_pdf(pdf_bytes, file_name, request_name, signer_name, signer_email, marker, note=""):
     """Upload a PDF (its {{S}} text tags become the signature boxes) and send it to one signer. Returns the request id."""
@@ -1875,11 +1875,11 @@ ZOHO_SIGNED_FN = r'''string standalone.__FN__(String request_id)
 		return "Zoho Sign request " + request_id + " not found: " + sresp.toString();
 	}
 	env_desc = ifnull(req.get("description"),"");
-	if(!env_desc.contains("SYC;"))
+	if(!env_desc.contains("SYC deal "))
 	{
 		return "Not sent from the pricebook - nothing to do.";
 	}
-	marker = env_desc.subString(env_desc.indexOf("SYC;"));
+	marker = env_desc.subString(env_desc.indexOf("SYC deal ")).replaceAll(" deal ",";deal=").replaceAll(" kind ",";kind=").replaceAll(" primary ",";primary=").replaceAll(" end",";end");
 	deal_id = "";
 	kind = "pack";
 	is_primary = false;
