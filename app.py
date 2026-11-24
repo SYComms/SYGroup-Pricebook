@@ -1780,7 +1780,65 @@ def zoho_order_data():
         term = 0
     pm = "Lease" if g.get("is_lease") else ("System rental" if g.get("is_inhouse") else "Upfront purchase")
     _cu = st.session_state.get("current_user") or {}
+    # ── Extra billing details: maintenance after the inclusive year, the annual price review, terminations,
+    #    and the separate Call Scope / SteadyTemp charges ──
+    bill = []
+    try:
+        if g.get("_tele_any") and not _maint_optout():
+            _mm = round(float((g.get("pl_data") or {}).get("maintenance_annual", 0) or 0) / 12, 2)
+            if _mm > 0:
+                bill.append(f"On-site warranty / maintenance: included for the first 12 months, then GBP {_mm:,.2f}/mo + VAT "
+                            "from month 13")
+    except Exception:
+        pass
+    try:
+        if g.get("_tele_any"):
+            _pb, _pi, _pn, _pp, _py = price_rise_figures()
+            if _pp > 0 and _pb > 0:
+                _yrs = max(1, min(8, -(-int(g.get("lease_term") or 12) // 12)))
+                bill.append(f"Annual price review: monthly services rise {_pp:g}% on each anniversary (hardware/system rental doesn't change)")
+                _prev = None
+                for _yi in range(_yrs):
+                    _amt = round(_pb * ((1 + _pp / 100.0) ** _yi), 2)
+                    _lbl = "Year 1 (from start)" if _yi == 0 else f"Year {_yi + 1} (from anniversary {_yi})"
+                    bill.append(f"  {_lbl}: GBP {_amt:,.2f}/mo services" + ("" if _prev is None else f" (+GBP {_amt - _prev:,.2f})"))
+                    _prev = _amt
+    except Exception:
+        pass
+    try:
+        _tl, _ts_ = float(G("q_term_lease") or 0), float(G("q_term_services") or 0)
+        if _tl > 0:
+            bill.append(f"Termination to pay - existing lease: GBP {_tl:,.2f}")
+        if _ts_ > 0:
+            bill.append(f"Termination to pay - existing services: GBP {_ts_:,.2f}")
+    except Exception:
+        pass
+    other = []
+    try:
+        if g.get("cs_active") and not g.get("cs_crm_missing") and g.get("cs_quote"):
+            _cq = g["cs_quote"]
+            other += [f"Call Scope: {int(l.get('qty') or 0)} x {l.get('name')}" for l in _cq.get("lines", []) if int(l.get("qty") or 0) > 0]
+            bill.append(f"Call Scope (separate agreement): GBP {float(_cq.get('monthly_total') or 0):,.2f}/mo + VAT over {_cq.get('term')} months"
+                        + (f", set-up GBP {float(_cq.get('setup_total') or 0):,.2f} + VAT" if float(_cq.get("setup_total") or 0) > 0 else ""))
+    except Exception:
+        pass
+    try:
+        _aq = g.get("ac_quote") if g.get("ac_active") else None
+        if _aq:
+            for _it, _q in _aq.get("qty", []):
+                if (_it.get("group") or "") not in ("Materials", "Labour"):
+                    other.append(f"SteadyTemp: {int(_q)} x {_it.get('name')}")
+            if _aq.get("est_days"):
+                other.append(f"SteadyTemp install: about {_aq['est_days']} day(s), {_aq.get('engineers') or 1} engineer(s)")
+            if _aq.get("is_cash"):
+                bill.append(f"SteadyTemp air conditioning (separate agreement): cash sale GBP {float(_aq.get('cash_price') or 0):,.2f} + VAT")
+            else:
+                bill.append(f"SteadyTemp air conditioning (separate agreement): GBP {float(_aq.get('rental') or 0):,.2f}/mo + VAT over "
+                            f"{_aq.get('term')} months (Shire Leasing)")
+    except Exception:
+        pass
     return {
+        "billing_notes": bill, "other_products": other,
         "company": str(G("q_comp_name") or "").strip(), "reg": str(G("q_comp_reg") or "").strip(),
         "address": str(G("q_address") or "").strip(), "phone": str(G("q_phone") or "").strip(),
         "first_name": first, "last_name": last or str(G("q_comp_name") or "Customer"), "position": pos,
@@ -1805,6 +1863,8 @@ def _zoho_deal_description(d):
     if d["hardware"]: out += ["", "Hardware:"] + [f"- {x}" for x in d["hardware"]]
     if d["broadband"]: out += ["", "Broadband:"] + [f"- {x}" for x in d["broadband"]]
     if d["ports"]: out += ["", "Numbers to port" + (f" (from {d['port_provider']})" if d["port_provider"] else "") + ":"] + [f"- {x}" for x in d["ports"]]
+    if d.get("other_products"): out += ["", "Other products:"] + [f"- {x}" for x in d["other_products"]]
+    if d.get("billing_notes"): out += ["", "Billing notes:"] + [f"- {x.strip()}" for x in d["billing_notes"]]
     if d["consultant"]: out += ["", f"Consultant: {d['consultant']}"]
     out += ["", "---- Pricebook data for the signed-paperwork automation: please don't edit the line below ----",
             "SYCDATA:" + json.dumps(d, ensure_ascii=True, separators=(",", ":"))]
@@ -2237,6 +2297,8 @@ ZOHO_SIGNED_FN = r'''string standalone.__FN__(String request_id)
 		broadband = ifnull(data.get("broadband"),list());
 		ports = ifnull(data.get("ports"),list());
 		mlines = ifnull(data.get("monthly_lines"),list());
+		others = ifnull(data.get("other_products"),list());
+		bnotes = ifnull(data.get("billing_notes"),list());
 		who = (ifnull(data.get("first_name"),"") + " " + ifnull(data.get("last_name"),"")).trim();
 		head = "<b>" + company + "</b> signed their " + brand + " paperwork on " + today_txt + ".<br>";
 		head = head + "Contact: " + who + " " + ifnull(data.get("position"),"") + " | " + email + " | " + ifnull(data.get("phone"),"") + "<br>";
@@ -2283,7 +2345,7 @@ ZOHO_SIGNED_FN = r'''string standalone.__FN__(String request_id)
 				tcontact.put("email",email);
 			}
 			// Broadband & provisioning: kit, broadband, number port
-			if(hardware.size() > 0 || broadband.size() > 0 || ports.size() > 0)
+			if(hardware.size() > 0 || broadband.size() > 0 || ports.size() > 0 || others.size() > 0)
 			{
 				body = head + "<br>";
 				if(hardware.size() > 0)
@@ -2317,6 +2379,14 @@ ZOHO_SIGNED_FN = r'''string standalone.__FN__(String request_id)
 					for each n in ports
 					{
 						body = body + "- " + n + "<br>";
+					}
+				}
+				if(others.size() > 0)
+				{
+					body = body + "<br><b>Other products to organise (Call Scope / SteadyTemp)</b><br>";
+					for each op in others
+					{
+						body = body + "- " + op + "<br>";
 					}
 				}
 				users_txt = "";
@@ -2360,6 +2430,21 @@ ZOHO_SIGNED_FN = r'''string standalone.__FN__(String request_id)
 			for each m in mlines
 			{
 				body2 = body2 + "- " + m + "<br>";
+			}
+			if(bnotes.size() > 0)
+			{
+				body2 = body2 + "<br><b>Also for billing</b><br>";
+				for each bn in bnotes
+				{
+					if(bn.startsWith("  "))
+					{
+						body2 = body2 + "&nbsp;&nbsp;&nbsp;&nbsp;" + bn.trim() + "<br>";
+					}
+					else
+					{
+						body2 = body2 + "- " + bn + "<br>";
+					}
+				}
 			}
 			if(bill_id != "")
 			{
