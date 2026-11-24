@@ -11069,28 +11069,40 @@ with tab6:
                                      placeholder="e.g. Jane Smith - Director")
         with send_col:
             sig_bytes = st.session_state.get("_sig_bytes")
-            st.markdown("### 🧭 Three steps")
-            st.markdown("#### Step 1 - Capture the signature")
+            st.markdown("### 🧭 Signing steps")
+            _cis_ok = True
+            if _tele_any:
+                st.markdown("#### Step 1 - Agreement to proceed: the Contract Information Sheet")
+                st.caption("The contract term and costings, for the customer to accept first. Record it in Zoho, download it, upload it "
+                           "in Zoho Sign and send it - they can sign it on your device there and then.")
+                _ip_cis = build_proposal_pdf(sign={"sig_bytes": None, "name": sig_name or "", "company": comp_name or "",
+                                                   "timestamp": ""}, cis=True)
+                _record_ui(_ip_cis, "cis", False, "Contract Information Sheet", "zs_ip_cis", f"{safe}_ContractInfoSheet",
+                           f"SYComms_{safe}_ContractInfoSheet_{date.today()}.pdf")
+                st.link_button("Open Zoho Sign →", "https://sign.zoho.eu", use_container_width=True)
+                _cis_ok = st.checkbox("The customer has signed the Contract Information Sheet", key="cis_done")
+            else:
+                st.markdown("#### Step 1 - Nothing to do")
+                st.caption("There is no telephony on this deal, so there's no Contract Information Sheet - go straight to step 2.")
+
+            st.markdown("#### Step 2 - Capture the signature")
             st.caption("On the left: draw or upload the customer's signature, press Save Signature, and check their name and position.")
             st.markdown(("✅" if sig_bytes else "⬜") + " Signature saved  \n" + ("✅" if sig_name else "⬜") + " Name and position typed")
 
-            st.markdown("#### Step 2 - Record in Zoho & download the signed pack")
+            st.markdown("#### Step 3 - Record in Zoho & download the signed pack")
             st.caption("Signed and dated everywhere with the customer's signature, apart from one 'Agreement to proceed' box that is "
-                       "signed in Zoho Sign." + (" The signed Contract Information Sheet is at the front." if _tele_any else ""))
+                       "signed in Zoho Sign.")
             if cs_crm_missing:
                 st.warning("Call Scope is held back from the pack until the customer's CRM is entered in the Call Scope card.")
             _ip_pack = None
-            if sig_bytes and sig_name:
+            if sig_bytes and sig_name and _cis_ok:
                 _sgx = {"sig_bytes": sig_bytes, "name": sig_name, "company": comp_name or "", "ts": _ts, "ip": _client_ip}
                 try:
                     if _tele_any:
                         _signed_bytes = build_pdf(sig_bytes=sig_bytes, sig_name=sig_name, sig_company=comp_name or "",
                                                   sig_timestamp=_ts, sig_ip=_client_ip, curr_total=current_total, curr_bb=current_bb,
                                                   curr_system=current_system, curr_calls=current_calls, curr_mobile=current_mobile)
-                        _cis_signed = build_proposal_pdf(sign={"sig_bytes": sig_bytes, "name": sig_name, "company": comp_name or "",
-                                                               "timestamp": _ts}, cis=True)
-                        _main = build_combined(_signed_bytes, _sgx) if _two else _signed_bytes
-                        _ip_pack = merge_pdfs(_cis_signed, _main)
+                        _ip_pack = build_combined(_signed_bytes, _sgx) if _two else _signed_bytes
                     elif cs_active and not cs_crm_missing:
                         # no telephony: the Call Scope 'Agreement to proceed' on the front page is the box left for Zoho Sign
                         _ip_pack = build_combined(None, dict(_sgx, cover_blank=True))
@@ -11102,17 +11114,15 @@ with tab6:
                     st.error(f"Couldn't build the signed pack: {_cse}")
             else:
                 _why = []
+                if not _cis_ok: _why.append("tick that the Contract Information Sheet is signed")
                 if not sig_bytes: _why.append("save the signature")
                 if not sig_name: _why.append("type the customer's name and position")
                 st.button("📝 Record in Zoho & download the signed pack", disabled=True, use_container_width=True, key="zs_ip_dis")
-                st.caption("To unlock it: " + " and ".join(_why) + ".")
+                st.caption("To unlock it: " + ", ".join(_why) + ".")
             _record_ui(_ip_pack, "pack", True, "signed pack", "zs_ip_pack", safe,
                        f"{_pack_prefix}_{safe}_SIGNED_{date.today()}.pdf")
-
-            st.markdown("#### Step 3 - Send it in Zoho Sign")
-            st.caption("Upload the file in Zoho Sign with the customer as the signer and send it - they can sign the last box on your "
-                       "device there and then. When they do, Zoho opens the account, files the paperwork under Legal Contracts and "
-                       "raises the onboarding tickets.")
+            st.caption("Upload it in Zoho Sign and send it - the customer signs the last box on your device. When they do, Zoho opens "
+                       "the account, files the paperwork under Legal Contracts and raises the onboarding tickets.")
             st.link_button("Open Zoho Sign →", "https://sign.zoho.eu", use_container_width=True)
             _save_quote_ui("dl_quote_ip")
     else:
