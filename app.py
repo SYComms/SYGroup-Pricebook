@@ -11138,6 +11138,7 @@ with tab6:
                                                       "timestamp": ""}, cis=True)
                 _record_ui(_cis_blank, "cis", False, "Contract Information Sheet", "zs_rm_cis", f"{safe}_ContractInfoSheet",
                            f"SYComms_{safe}_ContractInfoSheet_{date.today()}.pdf")
+                st.link_button("Open Zoho Sign →", "https://sign.zoho.eu", use_container_width=True)
                 _cis_ok = st.checkbox("The customer has signed the Contract Information Sheet", key="cis_done")
             else:
                 st.markdown("#### Step 1 - Nothing to do")
@@ -11156,6 +11157,7 @@ with tab6:
                     _rm_pack = None
                     st.error(f"Couldn't build the pack: {_cse}")
                 _record_ui(_rm_pack, "pack", True, "full pack", "zs_rm_pack", safe, f"{_pack_prefix}_{safe}_{date.today()}.pdf")
+                st.link_button("Open Zoho Sign →", "https://sign.zoho.eu", use_container_width=True)
             else:
                 st.button("📝 Record in Zoho & download the full pack", disabled=True, use_container_width=True, key="zs_rm_dis")
                 st.caption("Unlocks once the customer has signed the Contract Information Sheet (tick the box above).")
