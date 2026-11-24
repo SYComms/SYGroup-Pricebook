@@ -1789,6 +1789,7 @@ def zoho_ensure_deal(d):
         deal_id = str(G("q_zl_id") or "")
     if deal_id:
         _zoho_send("PUT", f"Deals/{deal_id}", {"data": [{"Description": desc, "Amount": d["monthly"]}]})
+        _zoho_order_note(deal_id, desc)
         st.session_state["q_zl_deal"] = deal_id
         return deal_id
     import datetime as _dt
@@ -1810,8 +1811,16 @@ def zoho_ensure_deal(d):
     deal_id = str((((j.get("data") or [{}])[0]).get("details") or {}).get("id") or "")
     if not deal_id:
         raise RuntimeError("Zoho didn't return the new deal's id.")
+    _zoho_order_note(deal_id, desc)
     st.session_state["q_zl_deal"] = deal_id
     return deal_id
+
+def _zoho_order_note(deal_id, desc):
+    """The order data also goes on the deal as a note: Zoho drops Description when the Deals layout has no
+    Description field, and the CRM function reads the newest 'Pricebook order data' note instead."""
+    _zoho_send("POST", f"Deals/{deal_id}/Notes",
+               {"data": [{"Note_Title": "Pricebook order data (used by the signed paperwork automation)",
+                          "Note_Content": desc}]})
 
 def zoho_deal_note(deal_id, title, text):
     try:
@@ -1960,14 +1969,37 @@ ZOHO_SIGNED_FN = r'''string standalone.__FN__(String request_id)
 		return "Deal " + deal_id + " not found in Zoho CRM.";
 	}
 	ddesc = ifnull(deal.get("Description"),"");
-	if(ddesc.contains("PROCESSED:" + request_id))
+	// The deal's notes: the newest 'Pricebook order data' note, and whether this envelope was already handled
+	data_src = "";
+	if(ddesc.contains("SYCDATA:"))
+	{
+		data_src = ddesc;
+	}
+	data_note_id = 0;
+	already = ddesc.contains("PROCESSED:" + request_id);
+	deal_notes = zoho.crm.getRelatedRecords("Notes","Deals",deal_id.toLong());
+	for each nt in deal_notes
+	{
+		n_title = ifnull(nt.get("Note_Title"),"");
+		n_body = ifnull(nt.get("Note_Content"),"");
+		if(n_title.startsWith("Signed") && n_body.contains("(request " + request_id + ")"))
+		{
+			already = true;
+		}
+		if(ddesc.contains("SYCDATA:") == false && n_body.contains("SYCDATA:") && nt.get("id").toLong() > data_note_id)
+		{
+			data_src = n_body;
+			data_note_id = nt.get("id").toLong();
+		}
+	}
+	if(already)
 	{
 		return "Already done for this envelope.";
 	}
 	data = Map();
-	if(ddesc.contains("SYCDATA:"))
+	if(data_src.contains("SYCDATA:"))
 	{
-		raw = ddesc.subString(ddesc.indexOf("SYCDATA:") + 8);
+		raw = data_src.subString(data_src.indexOf("SYCDATA:") + 8);
 		if(raw.contains("\n"))
 		{
 			raw = raw.subString(0,raw.indexOf("\n"));
