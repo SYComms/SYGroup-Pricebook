@@ -1835,6 +1835,27 @@ def zoho_send_for_signature(pdf_bytes, file_name, kind, primary, label):
                    f"Sent via Zoho Sign to {signer_name} <{signer_email}> by {d['consultant'] or 'the pricebook'} (request {rid}).")
     return deal_id, rid
 
+def zoho_manual_file_name(prefix, company_stub, deal_id, kind, primary):
+    """File name for a manual Zoho Sign upload. The CRM function finds the deal from the SYC-<deal>-<kind>-<P|S> token,
+    so only letters, digits, underscores and hyphens are used (Zoho Sign keeps the file name as the document name)."""
+    clean = lambda t: re.sub(r"_+", "_", re.sub(r"[^A-Za-z0-9_-]+", "_", str(t or ""))).strip("_-")
+    stub = clean(company_stub) or "Customer"
+    return f"{clean(prefix) or 'SYComms'}_{stub}_{date.today().isoformat()}_SYC-{deal_id}-{kind}-{'P' if primary else 'S'}.pdf"
+
+def zoho_record_for_manual(pdf_bytes, prefix, company_stub, kind, primary, label):
+    """Everything the ⚡ button does except the Zoho Sign call: the deal (with the SYCDATA: line) and a note.
+    Returns (deal_id, file_name) - the file name carries the reference the CRM function looks for."""
+    d = zoho_order_data()
+    deal_id = zoho_ensure_deal(d)
+    fname = zoho_manual_file_name(prefix, company_stub, deal_id, kind, primary)
+    zoho_deal_note(deal_id, f"Prepared for manual Zoho Sign: {label}",
+                   f"Prepared for manual Zoho Sign: {label} (file {fname}) by {d['consultant'] or 'the pricebook'}.")
+    return deal_id, fname
+
+def zs_is_licence_error(err):
+    t = str(err).lower()
+    return "upgrade" in t and "licen" in t
+
 # ─── SIGNED PAPERWORK AUTOMATION: the Zoho CRM function (Deluge) the Admin panel fills in ─────────────
 ZOHO_SIGNED_FN = r'''string standalone.__FN__(String request_id)
 {
@@ -1875,32 +1896,62 @@ ZOHO_SIGNED_FN = r'''string standalone.__FN__(String request_id)
 		return "Zoho Sign request " + request_id + " not found: " + sresp.toString();
 	}
 	env_desc = ifnull(req.get("description"),"");
-	if(!env_desc.contains("SYC deal "))
-	{
-		return "Not sent from the pricebook - nothing to do.";
-	}
-	marker = env_desc.subString(env_desc.indexOf("SYC deal ")).replaceAll(" deal ",";deal=").replaceAll(" kind ",";kind=").replaceAll(" primary ",";primary=").replaceAll(" end",";end");
 	deal_id = "";
 	kind = "pack";
 	is_primary = false;
-	for each part in marker.toList(";")
+	if(env_desc.contains("SYC deal "))
 	{
-		if(part.startsWith("deal="))
+		// Sent from the app through the Zoho Sign API: the reference is in the envelope description
+		marker = env_desc.subString(env_desc.indexOf("SYC deal ")).replaceAll(" deal ",";deal=").replaceAll(" kind ",";kind=").replaceAll(" primary ",";primary=").replaceAll(" end",";end");
+		for each part in marker.toList(";")
 		{
-			deal_id = part.getSuffix("deal=");
+			if(part.startsWith("deal="))
+			{
+				deal_id = part.getSuffix("deal=");
+			}
+			else if(part.startsWith("kind="))
+			{
+				kind = part.getSuffix("kind=");
+			}
+			else if(part == "primary=1")
+			{
+				is_primary = true;
+			}
 		}
-		else if(part.startsWith("kind="))
+		if(deal_id == "")
 		{
-			kind = part.getSuffix("kind=");
-		}
-		else if(part == "primary=1")
-		{
-			is_primary = true;
+			return "No deal reference in the envelope.";
 		}
 	}
-	if(deal_id == "")
+	else
 	{
-		return "No deal reference in the envelope.";
+		// Uploaded by hand in Zoho Sign: the reference is in the file name, e.g. ..._SYC-123456-pack-P.pdf
+		names = list();
+		names.add(ifnull(req.get("request_name"),""));
+		for each doc in ifnull(req.get("document_ids"),list())
+		{
+			names.add(ifnull(doc.get("document_name"),""));
+		}
+		for each nm in names
+		{
+			if(deal_id == "" && nm.contains("SYC-"))
+			{
+				bits = nm.subString(nm.lastIndexOf("SYC-") + 4).toList("-");
+				if(bits.size() >= 3)
+				{
+					if(bits.get(0).matches("[0-9]+") && (bits.get(1) == "pack" || bits.get(1) == "cis"))
+					{
+						deal_id = bits.get(0);
+						kind = bits.get(1);
+						is_primary = bits.get(2).startsWith("P");
+					}
+				}
+			}
+		}
+		if(deal_id == "")
+		{
+			return "Not sent from the pricebook - nothing to do.";
+		}
 	}
 	// 2. The deal and the order data the pricebook saved on it
 	deal = zoho.crm.getRecordById("Deals",deal_id.toLong());
@@ -2302,7 +2353,7 @@ ZOHO_AUTO_DEFAULTS = {
     "FN": "syc_signed_paperwork", "CONTRACT_MODULE": "Contracts", "F_ACCOUNT": "", "F_NAME": "Name",
     "F_TYPE": "Type", "TYPE_VALUE": "Network Services Agreement", "F_AMOUNT": "Amount", "F_PERIOD": "Billing_Period",
     "PERIOD_VALUE": "Monthly", "F_START": "", "F_END": "End_Date", "WON_STAGE": "Closed Won", "ACCOUNT_TYPE": "Customer",
-    "DEPT_PROV": "SYC - Broadband and Provisioning", "DEPT_BILL": "SYC - Billing",
+    "DEPT_PROV": "SYC - Broadband and Provisioning", "DEPT_BILL": "SYC - Billing Invoice Queries",
 }
 
 def zoho_build_signed_fn(cfg, dc="eu"):
@@ -2351,7 +2402,7 @@ def _zoho_read_automation_setup():
     return out
 
 def _zoho_automation_ui():
-    st.markdown("**Signed paperwork automation** - when a customer signs paperwork sent with the ⚡ buttons, Zoho opens the "
+    st.markdown("**Signed paperwork automation** - when a customer signs paperwork prepared with the 📝 (or ⚡) buttons, Zoho opens the "
                 "account, files the signed PDF under Legal Contracts, marks the deal won and raises the onboarding tickets.")
     if not _zoho_configured():
         st.info("Connect Zoho above first (with the 'Look-ups + deals + Zoho Sign' scope).")
@@ -10907,15 +10958,18 @@ with tab6:
                     st.text_input("Signer's name", key="zs_signer_name")
                 with _zs2:
                     st.text_input("Signer's email", key="zs_signer_email")
-                st.caption("Use the ⚡ buttons at steps 2 and 5. Zoho Sign emails the customer, and when they sign, Zoho opens the "
-                           "account, files the signed documents under Legal Contracts and raises the onboarding tickets.")
+                st.caption("At steps 2 and 5, press 📝 Record in Zoho & download for Zoho Sign, then upload that file in Zoho Sign "
+                           "without renaming it. When the customer signs, Zoho opens the account, files the signed documents under "
+                           "Legal Contracts and raises the onboarding tickets. (⚡ sends from the app but needs Zoho Sign API credits.)")
 
-        def _zs_send_ui(pdf_bytes, file_name, kind, primary, label, req_key, btn_key):
-            """⚡ button: send this PDF through Zoho Sign (and show its progress if it has been sent)."""
+        def _zs_send_ui(pdf_bytes, file_name, kind, primary, label, req_key, btn_key, prefix="SYComms", stub=""):
+            """📝 Record in Zoho & download for Zoho Sign (the normal route: the consultant uploads the file in Zoho Sign),
+            and the ⚡ button that sends it through the Zoho Sign API (needs Zoho Sign API credits)."""
             if not _zs_ok:
                 return
             _rid = st.session_state.get(req_key)
-            if _rid:
+            _show_send = True
+            if _rid:   # sent with ⚡ - progress can be checked through the API
                 _c1, _c2 = st.columns([3, 2])
                 with _c1:
                     st.caption(f"⚡ Sent through Zoho Sign (request {_rid}).")
@@ -10933,11 +10987,31 @@ with tab6:
                 if _stt:
                     (st.success if _stt == "completed" else st.info)(
                         "Signed and returned." if _stt == "completed" else f"Zoho Sign status: {_stt}")
-                if not st.checkbox("Send it again", key=f"{btn_key}_again_{st.session_state.get(btn_key + '_n', 0)}"):
-                    return
-            if pdf_bytes is None:
+                _show_send = st.checkbox("Send it again", key=f"{btn_key}_again_{st.session_state.get(btn_key + '_n', 0)}")
+            if pdf_bytes is None or not _show_send:
                 return
-            if st.button(f"⚡ Send the {label} through Zoho Sign for me", key=btn_key, type="primary", use_container_width=True):
+            _b1, _b2 = st.columns(2)
+            with _b1:
+                _rec = st.button("📝 Record in Zoho & download for Zoho Sign", key=btn_key + "_rec", type="primary",
+                                 use_container_width=True)
+            with _b2:
+                _api = st.button(f"⚡ Send the {label} through Zoho Sign for me", key=btn_key, use_container_width=True,
+                                 help="Sends straight from the app. Needs Zoho Sign API credits.")
+            if _rec:
+                try:
+                    with st.spinner("Recording the deal in Zoho..."):
+                        _did, _fn = zoho_record_for_manual(pdf_bytes, prefix, stub or safe, kind, primary, label)
+                    st.session_state[btn_key + "_manual"] = {"deal": _did, "name": _fn, "bytes": pdf_bytes}
+                except Exception as _e:
+                    st.error(str(_e))
+            _man = st.session_state.get(btn_key + "_manual")
+            if _man:
+                st.success(f"Recorded on Zoho deal {_man['deal']}.")
+                st.download_button(f"📥 Download {_man['name']}", data=_man["bytes"], file_name=_man["name"],
+                                   mime="application/pdf", use_container_width=True, key=btn_key + "_mdl")
+                st.caption("Upload this file in Zoho Sign as it is - don't rename it. The signature box places itself."
+                           + (" When the customer has signed, tick 'Step 2 complete' below." if kind == "cis" else ""))
+            if _api:
                 try:
                     with st.spinner("Recording the deal in Zoho and sending..."):
                         _did, _rid = zoho_send_for_signature(pdf_bytes, file_name, kind, primary, label)
@@ -10946,7 +11020,12 @@ with tab6:
                     st.session_state[btn_key + "_n"] = st.session_state.get(btn_key + "_n", 0) + 1   # fresh 'Send it again' box
                     st.success(f"Sent to {st.session_state.get('zs_signer_email')} - Zoho deal {_did} updated.")
                 except Exception as _e:
-                    st.error(str(_e))
+                    if zs_is_licence_error(_e):
+                        st.warning("Sending straight from the app needs Zoho Sign API credits, which aren't on our plan. "
+                                   "Use 📝 Record in Zoho & download for Zoho Sign instead, then upload that file in Zoho Sign. "
+                                   "It still files itself in Zoho once it's signed.")
+                    else:
+                        st.error(str(_e))
 
         st.markdown("### 🧭 Signing steps")
         _unsigned_bytes = build_pdf(sig_bytes=None, curr_total=current_total, curr_bb=current_bb,
@@ -10970,7 +11049,7 @@ with tab6:
                     st.caption("Add the signature and name (step 3) to sign it here.")
             st.markdown("#### Step 2 - Send it via Zoho Sign")
             _zs_send_ui(_cis_blank, f"SYComms_{safe}_ContractInfoSheet_{date.today()}.pdf", "cis", False,
-                        "Contract Information Sheet", "q_zs_cis", "zs_btn_cis")
+                        "Contract Information Sheet", "q_zs_cis", "zs_btn_cis", prefix="SYComms", stub=f"{safe}_ContractInfoSheet")
             st.link_button("Open Zoho Sign - send the Contract Information Sheet →", "https://sign.zoho.eu")
             _cis_done = st.checkbox("Step 2 complete - the customer has signed it and it has been returned", key="cis_done")
         else:
@@ -11025,9 +11104,9 @@ with tab6:
             except Exception:
                 _zs_pack_bytes = None
         _zs_send_ui(_zs_pack_bytes, f"{'Combined_Pack' if _two else 'SYComms'}_{safe}_{date.today()}.pdf", "pack", True,
-                    "agreement pack", "q_zs_pack", "zs_btn_pack")
+                    "agreement pack", "q_zs_pack", "zs_btn_pack", prefix=("Combined_Pack" if _two else "SYComms"), stub=safe)
         if _zs_ok and _zs_pack_bytes is None and not st.session_state.get("q_zs_pack"):
-            st.caption("⚡ The automatic send unlocks once the signed pack is ready at step 4.")
+            st.caption("📝 Recording in Zoho unlocks once the signed pack is ready at step 4.")
         st.link_button("Open Zoho Sign - send the signed pack →", "https://sign.zoho.eu")
 
         # ── Step 6 ────────────────────────────────────────────────────────────
