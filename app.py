@@ -11226,52 +11226,64 @@ with tab6:
                 if not CANVAS_OK:
                     st.warning("Drawing pad unavailable. Please use Upload photo instead.")
                 else:
-                    with st.container(border=True):
-                        st.caption("Draw with mouse, finger or stylus. Toolbar (top-right of box) to undo/clear.")
-                        try:
-                            canvas_result = st_canvas(
-                                fill_color="rgba(0,0,0,0)",
-                                stroke_width=3,
-                                stroke_color="#000000",
-                                background_color="#EAF4FB",
-                                update_streamlit=True,
-                                return_image_data=True,
-                                height=180,
-                                width=510,
-                                drawing_mode="freedraw",
-                                display_toolbar=True,
-                                key="sig_canvas",
-                            )
-                        except TypeError:
-                            canvas_result = st_canvas(
-                                fill_color="rgba(0,0,0,0)",
-                                stroke_width=3,
-                                stroke_color="#000000",
-                                background_color="#EAF4FB",
-                                update_streamlit=True,
-                                return_image_data=True,
-                                height=180,
-                                width=510,
-                                drawing_mode="freedraw",
-                                key="sig_canvas",
-                            )
+                    # The pad is opened with a button: Streamlit builds this tab in the background, and a pad set up while
+                    # the tab is hidden comes up blank. Opened here, it is set up while the consultant is looking at it.
+                    canvas_result = None
+                    if not st.session_state.get("_sig_pad_open"):
+                        if st.button("✍️ Open the signature pad", type="primary", use_container_width=True, key="btn_open_pad"):
+                            st.session_state["_sig_pad_open"] = True
+                            st.session_state["_cv_n"] = st.session_state.get("_cv_n", 0) + 1
+                            st.rerun()
+                    else:
+                        with st.container(border=True):
+                            st.caption("Draw with mouse, finger or stylus. Toolbar (top-right of box) to undo/clear.")
+                            _cv_key = "sig_canvas_" + str(st.session_state.get("_cv_n", 0))
+                            try:
+                                canvas_result = st_canvas(
+                                    fill_color="rgba(0,0,0,0)",
+                                    stroke_width=3,
+                                    stroke_color="#000000",
+                                    background_color="#EAF4FB",
+                                    update_streamlit=True,
+                                    height=180,
+                                    width=510,
+                                    drawing_mode="freedraw",
+                                    display_toolbar=True,
+                                    key=_cv_key,
+                                )
+                            except TypeError:
+                                canvas_result = st_canvas(
+                                    fill_color="rgba(0,0,0,0)",
+                                    stroke_width=3,
+                                    stroke_color="#000000",
+                                    background_color="#EAF4FB",
+                                    update_streamlit=True,
+                                    height=180,
+                                    width=510,
+                                    drawing_mode="freedraw",
+                                    key=_cv_key,
+                                )
+                        if st.button("↻ Pad looks blank? Reload it", key="btn_reload_pad"):
+                            st.session_state["_cv_n"] = st.session_state.get("_cv_n", 0) + 1
+                            st.rerun()
                     # Auto-save: as soon as there is ink on the pad it is kept, so moving on to the next
                     # step never loses it (a blank pad - e.g. after a reload - never overwrites a saved one)
                     try:
                         _strokes = len(((canvas_result.json_data or {}).get("objects") or [])) if canvas_result else 0
+                        _stamp = (st.session_state.get("_cv_n", 0), _strokes)
                         if _strokes and canvas_result.image_data is not None \
-                                and st.session_state.get("_sig_strokes") != _strokes:
+                                and st.session_state.get("_sig_strokes") != _stamp:
                             _sb = _sig_png_from_canvas(canvas_result.image_data)
                             if _sb:
                                 st.session_state["_sig_bytes"] = _sb
-                                st.session_state["_sig_strokes"] = _strokes
+                                st.session_state["_sig_strokes"] = _stamp
                     except Exception:
                         pass
                     # Explicit save button still there for peace of mind
                     _btn_col, _clr_col = st.columns(2)
                     with _btn_col:
                         if st.button("✅ Save Signature", use_container_width=True,
-                                     type="primary", key="btn_save_sig"):
+                                     type="primary", key="btn_save_sig", disabled=not st.session_state.get("_sig_pad_open")):
                             try:
                                 _img_data = canvas_result.image_data if canvas_result else None
                                 if _img_data is not None:
