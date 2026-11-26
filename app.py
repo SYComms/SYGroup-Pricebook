@@ -9114,6 +9114,133 @@ def compute_pricebook_pl():
         "cos_full": round(cos_full, 2), "sales_rate": sales_rate, "true_rate": true_rate,
     }
 
+def cost_breakdown_rows():
+    """Admin cost pricing: every hardware line at buy and sell, then every upfront cost of sale.
+    Uses the same figures as the HW Buy -> Sell and Sub Total cards."""
+    _up = 1 + hw_uplift_override / 100
+    hw = []          # (item, qty, unit buy, unit sell)
+    for name, qty in desktop_quantities.items():
+        i = HANDSETS_DESKTOP[name]; hw.append(("Desk phone - " + name, qty, i["buy"], i.get("sell", i["buy"] * _up)))
+    for name, qty in cordless_quantities.items():
+        i = HANDSETS_CORDLESS[name]; hw.append(("Cordless - " + name, qty, i["buy"], i.get("sell", i["buy"] * _up)))
+    for name, qty in headset_quantities.items():
+        i = HEADSETS[name]; hw.append(("Headset - " + name, qty, i["buy"], i.get("sell", i["buy"] * _up)))
+    for name, qty in other_quantities.items():
+        i = OTHER_HARDWARE.get(name)
+        if i: hw.append((name, qty, i["buy"], i.get("sell", i["buy"] * _up)))
+    if not _no_switch:
+        if switch_quantities:
+            for _sn, _sq in switch_quantities.items():
+                _si = next((s for s in SWITCHES if s["name"] == _sn), None)
+                if _si: hw.append(("Switch - " + _sn, _sq, _si["buy"], _si["buy"] * _up))
+        else:
+            _sw = get_recommended_switch(compute_poe_needed())
+            hw.append(("Switch - " + str(_sw.get("name", "recommended")) + " (auto)", 1, _sw["buy"], _sw.get("sell", _sw["buy"] * _up)))
+    if add_router:
+        if router_quantities:
+            for _rn, _rq in router_quantities.items():
+                if _rn in ROUTERS: hw.append(("Router - " + _rn, _rq, ROUTERS[_rn], ROUTER_SELL.get(_rn, ROUTERS[_rn] * _up)))
+        elif router_type not in ("None / Customer Supplied", "") and router_type in ROUTERS:
+            hw.append(("Router - " + router_type, 1, ROUTERS[router_type], ROUTER_SELL.get(router_type, ROUTERS[router_type] * _up)))
+    hw = [(n, int(q), float(b), float(s)) for n, q, b, s in hw if int(q or 0) > 0]
+
+    pl = pl_data
+    costs = []       # (description, how it's worked out, amount)
+    _inst = compute_install_cost()
+    if install_type == "Engineer Install":
+        _rate = float(C.get("install_engineer", 450.0))
+        _how = (f"Manager override (pricebook would be {int(install_days)} day(s) x £{_rate:,.2f})"
+                if abs(_inst - _rate * max(1, int(install_days))) > 0.01 else f"{int(install_days)} day(s) x £{_rate:,.2f} per day")
+        costs.append(("Engineer installation", _how, _inst))
+    elif _inst > 0:
+        costs.append(("Installation", f"{install_type} - manager override", _inst))
+    else:
+        costs.append(("Installation", f"{install_type} - no engineer charge", 0.0))
+    if float(pl.get("maintenance_annual") or 0) > 0:
+        costs.append(("Warranty / maintenance - year 1", "20% of hardware RRP (buy £" + f"{hw_buy:,.2f} x 1.5)", float(pl["maintenance_annual"])))
+    elif _maint_optout():
+        costs.append(("Warranty / maintenance - year 1", "Opted out on this deal", 0.0))
+    _fixed = round(float(pl["cos_full"]) - hw_buy - float(pl.get("maintenance_annual") or 0) - _inst
+                   - float(termination_cost) - float(extra_costs_total), 2)
+    if _fixed > 0.004:
+        costs.append(("Pricebook fixed costs of sale", "Standard £200 + £400 on every deal (P&L sheet)", _fixed))
+    if float(termination_cost) > 0:
+        costs.append(("Buyout / termination of the existing contract", "Lease £" + f"{float(st.session_state.get('q_term_lease') or 0):,.2f}"
+                      + " + services £" + f"{float(st.session_state.get('q_term_services') or 0):,.2f}", float(termination_cost)))
+    for _d, _a in extra_costs:
+        costs.append(("Additional internal cost - " + _d, "Entered in Additional Costs (Internal)", float(_a)))
+    info = []        # charged to the customer upfront, not part of the cost of sale above
+    try:
+        _bbm = float(_bb_install_main(apply_ov=False) or 0)
+        if _bbm > 0: info.append((f"Broadband installation - {bb_package}", _bbm))
+        for _p, _q in extra_bb_lines.items():
+            _v = float(BROADBAND[bb_provider][_p]["install"] or 0) * int(_q)
+            if _v > 0: info.append((f"Broadband installation - {int(_q)} x additional {_p}", _v))
+    except Exception:
+        pass
+    return hw, costs, info
+
+def build_cost_breakdown_pdf():
+    hw, costs, info = cost_breakdown_rows()
+    def P(t):
+        t = str(t if t is not None else "").replace("—", "-").replace("–", "-").replace("’", "'").replace("→", "->")
+        return t.encode("latin-1", errors="replace").decode("latin-1")
+    def g(v): return f"£{v:,.2f}"
+    pdf = FPDF(orientation="P", unit="mm", format="A4"); pdf.set_auto_page_break(True, 15); pdf.add_page()
+    pdf.set_font("Helvetica", "B", 15); pdf.cell(0, 8, P("Cost pricing - " + (str(st.session_state.get("q_comp_name") or "").strip() or "quote")), ln=1)
+    pdf.set_font("Helvetica", "", 9); pdf.set_text_color(90, 90, 90)
+    pdf.cell(0, 5, P(f"{st.session_state.get('selected_brand') or 'SY Comms'}  |  {payment_model}  |  {lease_term} months  |  "
+                     f"prepared {date.today().strftime('%d/%m/%Y')}  |  INTERNAL - not for the customer"), ln=1)
+    pdf.set_text_color(0, 0, 0); pdf.ln(3)
+    def head(t):
+        pdf.set_font("Helvetica", "B", 11); pdf.set_fill_color(230, 236, 245); pdf.cell(0, 7, P(t), ln=1, fill=True); pdf.ln(1)
+    def row(cells, widths, bold=False, aligns=None):
+        pdf.set_font("Helvetica", "B" if bold else "", 8.5)
+        for i, (c, w) in enumerate(zip(cells, widths)):
+            pdf.cell(w, 5.5, P(c), border="B", align=(aligns or "L" * len(cells))[i])
+        pdf.ln()
+    head("1. Hardware - buy price -> sell price")
+    W = [74, 12, 24, 26, 24, 26]
+    row(["Item", "Qty", "Unit buy", "Line buy", "Unit sell", "Line sell"], W, True, "LRRRRR")
+    tb = ts = 0.0
+    for n, q, b, s in hw:
+        tb += b * q; ts += s * q
+        row([n, str(q), g(b), g(b * q), g(s), g(s * q)], W, aligns="LRRRRR")
+    if not hw:
+        row(["No hardware on this deal", "", "", "", "", ""], W)
+    row(["Total hardware", "", "", g(tb), "", g(ts)], W, True, "LRRRRR")
+    if abs(ts - hw_sell) > 0.01:
+        pdf.set_font("Helvetica", "I", 8); pdf.multi_cell(0, 4.5, P(f"Customer hardware price on the deal is {g(hw_sell)} - a manager override "
+                                                             f"(Per-Deal Overrides) replaces the pricebook sell total of {g(ts)}."))
+    pdf.ln(3)
+    head("2. Upfront costs of sale (on top of the hardware buy)")
+    W2 = [70, 90, 26]
+    row(["Cost", "How it's worked out", "Amount"], W2, True, "LLR")
+    tc = 0.0
+    for d, h, a in costs:
+        tc += a; row([d, h, g(a)], W2, aligns="LLR")
+    row(["Total upfront costs of sale", "", g(tc)], W2, True, "LLR")
+    pdf.ln(3)
+    head("3. Summary")
+    W3 = [160, 26]
+    for lbl, v, b in [("Hardware at buy price", tb, False), ("Upfront costs of sale", tc, False),
+                      ("TOTAL COST TO US", tb + tc, True),
+                      ("Hardware SRRP (sell x 1.5)", float(pl_data["hw_srrp"]), False),
+                      ("Sub total (SRRP + costs of sale excl. hardware buy)" + (" - used for the rental" if is_lease else ""),
+                       float(pl_data["sub_total"]), False),
+                      *([("Customer system price - spread over the term", float(inhouse_price), False)] if is_inhouse else []),
+                      *([("Customer pays upfront (hardware, install, set-up)", float(upfront), False)] if not is_spread else [])]:
+        row([lbl, g(v)], W3, b, "LR")
+    if is_lease:
+        row([f"Rental at sales rate {pl_data['sales_rate']} per £1,000", g(float(pl_data["rental"])) + "/mo"], W3, False, "LR")
+    if info:
+        pdf.ln(3); head("For info - charged to the customer upfront, not in the costs above")
+        for d, a in info:
+            row([d, g(a)], W3, False, "LR")
+    pdf.ln(2); pdf.set_font("Helvetica", "I", 7.5); pdf.set_text_color(110, 110, 110)
+    pdf.multi_cell(0, 4, P("Figures match the HW Buy -> Sell and Sub Total cards on the admin dashboard. Prices exclude VAT."))
+    return bytes(pdf.output())
+
 def compute_pat(svc):
     """Legacy - returns gross_profit from pricebook P&L formula as PAT proxy."""
     return compute_pricebook_pl()["gross_profit"]
@@ -12450,6 +12577,12 @@ if _show_dash:
               <div class="metric-value" style="font-size:1.3rem">£{hw_buy:.0f} → £{hw_sell:.0f}</div>
               <div class="metric-sub">Sell: £{hw_sell:.0f} (pricebook rates)</div>
             </div>''', unsafe_allow_html=True)
+            try:
+                st.download_button("⬇️ Download cost pricing", data=build_cost_breakdown_pdf(),
+                                   file_name=f"Cost_pricing_{re.sub(r'[^A-Za-z0-9]+', '_', str(st.session_state.get('q_comp_name') or 'quote')).strip('_')}_{date.today()}.pdf",
+                                   mime="application/pdf", use_container_width=True, key="dl_cost_pricing")
+            except Exception as _cbe:
+                st.caption(f"Cost pricing unavailable: {_cbe}")
         with fi3:
             st.markdown(f'''<div class="metric-card">
               <div class="metric-label">Sub Total (SRRP basis)</div>
