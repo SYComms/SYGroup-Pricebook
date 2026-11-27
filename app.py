@@ -504,7 +504,7 @@ def _default_config():
         "headsets": [
             {"name": "Poly Blackwire 3210 (Mono, Wired)",   "buy": 19.54},
             {"name": "Poly Blackwire 3220 (Stereo, Wired)", "buy": 29.31},
-            {"name": "Yealink WH64 (Mono, Wireless)",       "buy": 97.39},
+            {"name": "Yealink WH64 (Mono, Wireless)",       "buy": 99.99},
             {"name": "Yealink WH64 (Stereo, Wireless)",     "buy": 115.99},
         ],
         "other_hardware": [
